@@ -67,7 +67,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     setError("");
     startTransition(async () => {
       const result = await submitRequest(trimmed);
-      setHtml(result.html);
+      if (result.html) setHtml(result.html);
       setMessage(result.message);
       if (result.error) setError(result.error);
     });

@@ -2,9 +2,10 @@
 
 import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
-import { anthropic } from "@ai-sdk/anthropic";
+import { redirect } from "next/navigation";
 import { generateText, isStepCount, tool } from "ai";
 import { z } from "zod";
+import { checkPassword, isAuthenticated, setAuthCookie } from "@/lib/auth";
 import {
   getSession,
   recordRequest,
@@ -82,11 +83,22 @@ function buildTools(session: UISession) {
 
 export type UIResult = { html: string; message: string; error?: string };
 
-export async function getCurrentUI(): Promise<string> {
-  return getSession(await sessionId()).html;
+export type LoginState = { error: string };
+
+export async function login(_prev: LoginState, formData: FormData): Promise<LoginState> {
+  const attempt = String(formData.get("password") ?? "");
+  if (!checkPassword(attempt)) {
+    if (!process.env.APP_PASSWORD) console.error("APP_PASSWORD is not set; sign-in is disabled.");
+    return { error: "Wrong password." };
+  }
+  await setAuthCookie();
+  redirect("/");
 }
 
 export async function submitRequest(transcript: string): Promise<UIResult> {
+  if (!(await isAuthenticated())) {
+    return { html: "", message: "", error: "Not signed in. Reload the page." };
+  }
   const text = transcript.trim().slice(0, 4000);
   const session = getSession(await sessionId());
   if (!text) return { html: session.html, message: "" };
@@ -97,18 +109,16 @@ export async function submitRequest(transcript: string): Promise<UIResult> {
 
   try {
     const result = await generateText({
-      model: anthropic("claude-opus-5-5"),
+      // Routed through Vercel AI Gateway: authenticates with the deployment's
+      // OIDC token on Vercel, or VERCEL_OIDC_TOKEN / AI_GATEWAY_API_KEY locally.
+      model: "anthropic/claude-opus-5-5",
       system: SYSTEM,
       prompt: `${previous}Current HTML document:\n<current_html>\n${session.html}\n</current_html>\n\nUser request (speech transcript):\n<request>${text}</request>`,
       tools: buildTools(session),
       stopWhen: isStepCount(8),
       maxOutputTokens: 32000,
       providerOptions: {
-        anthropic: {
-          effort: "medium",
-          // Retry on another model server-side if a safety classifier declines the request.
-          fallbacks: "default",
-        },
+        anthropic: { effort: "medium" },
       },
     });
     recordRequest(session, text);
@@ -124,6 +134,7 @@ export async function submitRequest(transcript: string): Promise<UIResult> {
 }
 
 export async function resetUI(): Promise<string> {
+  if (!(await isAuthenticated())) throw new Error("Not signed in.");
   const id = await sessionId();
   resetSession(id);
   return getSession(id).html;
