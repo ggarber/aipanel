@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
-import { resetUI, submitRequest } from "./actions";
+import { resetUI, submitRequest, type RequestOrigin } from "./actions";
 
 // Minimal Web Speech API typings (not in lib.dom for all TS versions).
 type SpeechRecognitionResultLike = { isFinal: boolean; 0: { transcript: string } };
@@ -33,6 +33,26 @@ function getRecognitionCtor(): SpeechRecognitionCtor | null {
 
 const noopSubscribe = () => () => {};
 
+// Injected into every rendered document (not stored server-side) so generated pages can
+// call askLLM(request, context) to send a follow-up request back through the LLM.
+const BRIDGE_SCRIPT = `<script>(function(){
+  window.askLLM = function (request, context) {
+    if (typeof request !== "string" || !request.trim()) return;
+    var ctx;
+    try { ctx = context === undefined ? undefined : JSON.parse(JSON.stringify(context)); } catch (e) {}
+    parent.postMessage({ type: "genui:ask", request: request, context: ctx }, "*");
+  };
+})();</script>`;
+
+function withBridge(html: string): string {
+  const head = /<head[^>]*>/i.exec(html);
+  if (head) {
+    const at = head.index + head[0].length;
+    return html.slice(0, at) + BRIDGE_SCRIPT + html.slice(at);
+  }
+  return BRIDGE_SCRIPT + html;
+}
+
 type Status = "idle" | "listening" | "thinking";
 
 export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
@@ -50,8 +70,13 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   );
   const [isPending, startTransition] = useTransition();
 
+  const [requestSource, setRequestSource] = useState<RequestOrigin["source"]>("voice");
+
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const finalRef = useRef("");
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Guards against overlapping requests, e.g. a generated page calling askLLM repeatedly.
+  const busyRef = useRef(false);
 
   const status: Status = isPending ? "thinking" : listening ? "listening" : "idle";
 
@@ -59,19 +84,41 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     return () => recognitionRef.current?.abort();
   }, []);
 
-  function send(text: string) {
+  function send(text: string, origin: RequestOrigin = { source: "voice" }) {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed || busyRef.current) return;
+    busyRef.current = true;
+    setRequestSource(origin.source);
     setTranscript(trimmed);
     setMessage("");
     setError("");
     startTransition(async () => {
-      const result = await submitRequest(trimmed);
-      if (result.html) setHtml(result.html);
-      setMessage(result.message);
-      if (result.error) setError(result.error);
+      try {
+        const result = await submitRequest(trimmed, origin);
+        if (result.html) setHtml(result.html);
+        setMessage(result.message);
+        if (result.error) setError(result.error);
+      } finally {
+        busyRef.current = false;
+      }
     });
   }
+
+  const sendRef = useRef(send);
+  useEffect(() => {
+    sendRef.current = send;
+  });
+
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      const data = e.data as { type?: unknown; request?: unknown; context?: unknown } | null;
+      if (data?.type !== "genui:ask" || typeof data.request !== "string") return;
+      sendRef.current(data.request.slice(0, 2000), { source: "panel", context: data.context });
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   function startListening() {
     const Ctor = getRecognitionCtor();
@@ -128,8 +175,9 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   return (
     <div className="fixed inset-0 bg-white">
       <iframe
+        ref={iframeRef}
         title="Generated UI"
-        srcDoc={html}
+        srcDoc={withBridge(html)}
         sandbox="allow-scripts allow-forms allow-modals allow-popups"
         className={`h-full w-full border-0 transition-opacity ${isPending ? "opacity-60" : ""}`}
       />
@@ -139,7 +187,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           <div className="pointer-events-auto max-w-sm rounded-2xl bg-zinc-900/90 px-4 py-3 text-sm text-zinc-100 shadow-xl backdrop-blur">
             {transcript && (
               <p className="text-zinc-300">
-                <span className="text-zinc-500">You: </span>
+                <span className="text-zinc-500">{requestSource === "panel" ? "Page: " : "You: "}</span>
                 {transcript}
               </p>
             )}

@@ -42,6 +42,24 @@ Rules for the HTML:
   (about 96x96px) free of important content — a floating talk button sits there.
 - Transcripts come from speech recognition and may have errors; infer the intent.
 
+Interactivity — pick the cheapest mechanism that works:
+- Plain embedded JavaScript for anything computable in the page: counters, toggles, tabs,
+  filters, sorting, form validation, timers, small calculations. No round trip to you.
+- askLLM(request, context) is a global function already defined in the page. Calling it sends
+  the request back to you as a new turn, and you update this document again. Use it only when
+  the action needs knowledge, generation, or a new/changed screen, e.g. a "More about the
+  weather in Paris" button, "Generate 5 more ideas", "Show details for this item".
+  - request: a short plain-language instruction, written as if the user had said it.
+  - context: an optional JSON-serializable object with the state the request depends on
+    (form values, the selected item, the current counter value…).
+  - Runtime changes made by scripts are NOT kept: each update starts from the HTML you wrote.
+    Pass any runtime state you need to preserve in context, and bake it into the new HTML.
+  - Only call askLLM from a user action (click, submit) — never on load, in timers, or in loops.
+  - Disable the triggering control and show a loading state when calling it; the whole page is
+    replaced when the response arrives.
+- You have no internet access or live data. For real-time topics (weather, prices, news), give
+  general or typical information and label it as not live.
+
 Always call a tool to change the screen unless the request is unclear or impossible; then make
 no tool call and reply with one short sentence. After your tool calls, reply with one short
 sentence describing what changed.`;
@@ -83,6 +101,11 @@ function buildTools(session: UISession) {
 
 export type UIResult = { html: string; message: string; error?: string };
 
+// "voice": the user spoke (or typed) a request. "panel": the generated page called askLLM().
+export type RequestOrigin = { source: "voice" } | { source: "panel"; context?: unknown };
+
+const MAX_CONTEXT_CHARS = 8000;
+
 export type LoginState = { error: string };
 
 export async function login(_prev: LoginState, formData: FormData): Promise<LoginState> {
@@ -95,13 +118,30 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   redirect("/");
 }
 
-export async function submitRequest(transcript: string): Promise<UIResult> {
+export async function submitRequest(
+  transcript: string,
+  origin: RequestOrigin = { source: "voice" },
+): Promise<UIResult> {
   if (!(await isAuthenticated())) {
     return { html: "", message: "", error: "Not signed in. Reload the page." };
   }
   const text = transcript.trim().slice(0, 4000);
   const session = getSession(await sessionId());
   if (!text) return { html: session.html, message: "" };
+
+  const fromPanel = origin.source === "panel";
+  let contextJson = "";
+  if (fromPanel && origin.context !== undefined) {
+    try {
+      contextJson = JSON.stringify(origin.context).slice(0, MAX_CONTEXT_CHARS);
+    } catch {
+      contextJson = "";
+    }
+  }
+  const requestBlock = fromPanel
+    ? `Request from the page via askLLM() (the user clicked something in the current UI):\n<request>${text}</request>` +
+      (contextJson ? `\n<context>${contextJson}</context>` : "")
+    : `User request (speech transcript):\n<request>${text}</request>`;
 
   const previous = session.requests.length
     ? `Earlier requests (oldest first):\n${session.requests.map((r) => `- ${r}`).join("\n")}\n\n`
@@ -113,7 +153,7 @@ export async function submitRequest(transcript: string): Promise<UIResult> {
       // OIDC token on Vercel, or VERCEL_OIDC_TOKEN / AI_GATEWAY_API_KEY locally.
       model: "anthropic/claude-opus-5-5",
       system: SYSTEM,
-      prompt: `${previous}Current HTML document:\n<current_html>\n${session.html}\n</current_html>\n\nUser request (speech transcript):\n<request>${text}</request>`,
+      prompt: `${previous}Current HTML document:\n<current_html>\n${session.html}\n</current_html>\n\n${requestBlock}`,
       tools: buildTools(session),
       stopWhen: isStepCount(8),
       maxOutputTokens: 32000,
@@ -121,7 +161,7 @@ export async function submitRequest(transcript: string): Promise<UIResult> {
         anthropic: { effort: "medium" },
       },
     });
-    recordRequest(session, text);
+    recordRequest(session, fromPanel ? `[page] ${text}` : text);
     return { html: session.html, message: result.text };
   } catch (err) {
     console.error("submitRequest failed", err);
