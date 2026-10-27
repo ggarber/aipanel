@@ -62,6 +62,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [typed, setTyped] = useState("");
+  const [textOpen, setTextOpen] = useState(false);
   // true on the server so the button doesn't flash a disabled state before hydration.
   const supported = useSyncExternalStore(
     noopSubscribe,
@@ -197,11 +198,12 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           </div>
         )}
 
-        {!supported && (
+        {(textOpen || !supported) && (
           <form
             className="pointer-events-auto flex gap-2"
             onSubmit={(e) => {
               e.preventDefault();
+              if (isPending || !typed.trim()) return;
               send(typed);
               setTyped("");
             }}
@@ -209,9 +211,20 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
             <input
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
-              placeholder="Speech not supported — type instead"
-              className="w-72 rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-900 shadow"
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && supported) setTextOpen(false);
+              }}
+              autoFocus
+              placeholder={supported ? "Type what you want to see…" : "Speech not supported — type instead"}
+              className="w-80 max-w-[calc(100vw-3rem)] rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-900 shadow"
             />
+            <button
+              type="submit"
+              disabled={isPending || !typed.trim()}
+              className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow hover:bg-zinc-700 disabled:opacity-50"
+            >
+              Send
+            </button>
           </form>
         )}
 
@@ -223,6 +236,20 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           >
             Reset
           </button>
+          {supported && (
+            <button
+              onClick={() => setTextOpen((open) => !open)}
+              aria-label={textOpen ? "Hide text input" : "Type instead"}
+              aria-pressed={textOpen}
+              className={`flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition
+                ${textOpen ? "bg-zinc-900 text-white hover:bg-zinc-700" : "bg-white text-zinc-700 hover:bg-zinc-100"}`}
+            >
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="6" width="20" height="12" rx="2" />
+                <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
+              </svg>
+            </button>
+          )}
           <button
             onClick={toggleTalk}
             disabled={!supported || isPending}
