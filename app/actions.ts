@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { google } from "@ai-sdk/google";
 import { generateText, isStepCount, tool } from "ai";
 import { z } from "zod";
 import { checkPassword, isAuthenticated, setAuthCookie } from "@/lib/auth";
@@ -149,16 +150,15 @@ export async function submitRequest(
 
   try {
     const result = await generateText({
-      // Routed through Vercel AI Gateway: authenticates with the deployment's
-      // OIDC token on Vercel, or VERCEL_OIDC_TOKEN / AI_GATEWAY_API_KEY locally.
-      model: "anthropic/claude-opus-5-5",
+      // Calls the Gemini API directly; reads GOOGLE_GENERATIVE_AI_API_KEY.
+      model: google("gemini-3.8-flash"),
       system: SYSTEM,
       prompt: `${previous}Current HTML document:\n<current_html>\n${session.html}\n</current_html>\n\n${requestBlock}`,
       tools: buildTools(session),
       stopWhen: isStepCount(8),
       maxOutputTokens: 32000,
       providerOptions: {
-        anthropic: { effort: "medium" },
+        google: { thinkingConfig: { thinkingLevel: "medium" } },
       },
     });
     recordRequest(session, fromPanel ? `[page] ${text}` : text);
