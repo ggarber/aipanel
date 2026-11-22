@@ -12,12 +12,21 @@ cp .env.example .env.local   # add GOOGLE_GENERATIVE_AI_API_KEY and APP_PASSWORD
 npm run dev
 ```
 
-Open http://localhost:3000 in Chrome, Edge or Safari. These browsers support the Web Speech API. In other browsers a text box replaces the mic.
+Open http://localhost:3000 in Chrome, Edge or Safari.
+
+## Models
+
+The gear button opens Settings. The choice is saved in this browser.
+
+- **Server default:** Gemini (`gemini-3.8-flash`) with the server's `GOOGLE_GENERATIVE_AI_API_KEY`.
+- **Gemini / OpenAI / Anthropic with your own key:** the key and model name are stored in this browser's `localStorage` and sent with each request. The server uses them for that call only. It never stores or logs them (`logging.serverFunctions` is off in `next.config.ts`, since dev logs would print action arguments).
+- **In this browser:** Chrome's built-in Gemini Nano via the [Prompt API](https://developer.chrome.com/docs/ai/prompt-api). It needs a recent desktop Chrome, and Chrome downloads the model (a few GB) on first use. The model runs in the page with a short prompt of its own (`lib/local-model.ts`), because its context window is about 9k tokens and it handles neither tools nor long JSON well. It returns the whole new document as plain HTML, which is saved back to the session. These browsers support the Web Speech API. In other browsers a text box replaces the mic.
 
 ## How it works
 
 - `app/generative-ui.tsx` (client): `SpeechRecognition` transcribes speech. On end it calls the `submitRequest` server action and renders the returned HTML in a sandboxed `<iframe srcDoc>`.
-- `app/actions.ts` (server action): AI SDK `generateText` with Gemini `gemini-3.8-flash` (`@ai-sdk/google`) and two tools:
+- `lib/genui.ts`: the system prompt, prompt builder and document-editing tools, shared by both paths.
+- `app/actions.ts` (server action): AI SDK `generateText` with the model from `lib/models.ts` (the server's Gemini by default, or the user's own provider and key) and two tools:
   - `set_html` replaces the whole document.
   - `edit_html` does an exact find/replace for small changes.
 
