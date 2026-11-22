@@ -98,7 +98,7 @@ export async function saveLocalResult(html: string, request: string): Promise<vo
   recordRequest(session, request.slice(0, 4000));
 }
 
-export type ExtractResult = { data?: unknown; url?: string; fetchedAt?: string; error?: string };
+export type ExtractResult = { data?: unknown; url?: string; fetchedAt?: string; cached?: boolean; error?: string };
 
 const EXTRACT_LIMIT = 30;
 const EXTRACT_WINDOW_MS = 10 * 60_000;

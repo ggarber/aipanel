@@ -12,12 +12,15 @@ import {
 import { historyEntry } from "@/lib/genui";
 import { runLocalModel } from "@/lib/local-model";
 import {
+  describeExtractionModel,
+  describeModel,
   getServerSettings,
   getSettings,
   PROVIDERS,
   remoteChoice,
   subscribeSettings,
 } from "@/lib/model-settings";
+import StatusBar, { seconds, useActivities } from "./status-bar";
 import SettingsDialog from "./settings-dialog";
 
 // Minimal Web Speech API typings (not in lib.dom for all TS versions).
@@ -114,6 +117,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     () => true,
   );
   const [isPending, startTransition] = useTransition();
+  const { activities, last, begin, update, end, note } = useActivities();
 
   const [requestSource, setRequestSource] = useState<RequestOrigin["source"]>("voice");
 
@@ -164,15 +168,26 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     setTranscript(trimmed);
     setMessage("");
     setError("");
+    const current = getSettings();
+    const model = describeModel(current);
+    const what = origin.source === "panel" ? "handle a page action" : "update the page";
+    const activity = begin(`Asking ${model} to ${what}…`);
+    const started = Date.now();
     startTransition(async () => {
       try {
         const result =
-          getSettings().source === "local"
-            ? await runLocal(trimmed, origin)
-            : await submitRequest(trimmed, origin, remoteChoice(getSettings()));
+          current.source === "local"
+            ? await runLocal(trimmed, origin, activity)
+            : await submitRequest(trimmed, origin, remoteChoice(current));
         if (result.html) setHtml(result.html);
         setMessage(result.message);
         if (result.error) setError(result.error);
+        end(
+          activity,
+          result.error
+            ? { text: `${model} failed: ${result.error}`, error: true }
+            : { text: `Page updated by ${model} in ${seconds(Date.now() - started)}` },
+        );
       } finally {
         busyRef.current = false;
         setDownload(null);
@@ -180,10 +195,19 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     });
   }
 
-  async function runLocal(text: string, origin: RequestOrigin) {
+  async function runLocal(text: string, origin: RequestOrigin, activity: number) {
+    const onProgress = (fraction: number) => {
+      setDownload(fraction);
+      update(
+        activity,
+        fraction < 1
+          ? `Downloading Gemini Nano into Chrome… ${Math.round(fraction * 100)}%`
+          : "Asking Gemini Nano (in this browser) to update the page…",
+      );
+    };
     try {
       const doc = await getLocalContext();
-      const result = await runLocalModel(doc, text, origin, setDownload);
+      const result = await runLocalModel(doc, text, origin, onProgress);
       await saveLocalResult(result.html, historyEntry(text, origin));
       return { ...result, error: undefined };
     } catch (err) {
@@ -217,8 +241,31 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           return;
         }
         inFlight++;
+        let host = String(data.url);
+        try {
+          host = new URL(host).hostname;
+        } catch {}
+        const model = describeExtractionModel(getSettings());
+        const activity = begin(`Refreshing data from ${host}: ${model} is reading the page…`);
+        const started = Date.now();
         extractData(data.url, data.instruction, remoteChoice(getSettings()))
-          .then(reply, () => reply({ error: "Couldn't reach the server." }))
+          .then(
+            (result) => {
+              reply(result);
+              end(
+                activity,
+                result.error
+                  ? { text: `Data from ${host} failed: ${result.error}`, error: true }
+                  : result.cached
+                    ? { text: `Data from ${host} (cached, under 5 min old)` }
+                    : { text: `Data from ${host} refreshed by ${model} in ${seconds(Date.now() - started)}` },
+              );
+            },
+            () => {
+              reply({ error: "Couldn't reach the server." });
+              end(activity, { text: `Data from ${host} failed: couldn't reach the server`, error: true });
+            },
+          )
           .finally(() => inFlight--);
         return;
       }
@@ -227,7 +274,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+  }, [begin, end]);
 
   // continuous keeps listening through pauses, for push-to-talk where release ends it.
   function startListening(continuous = false) {
@@ -253,7 +300,11 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
         setError(`Speech recognition error: ${e.error}`);
       }
     };
+    const activity = begin(
+      continuous ? "Listening (push-to-talk): release to send…" : "Listening… click the button again to send",
+    );
     recognition.onend = () => {
+      end(activity);
       setListening(false);
       recognitionRef.current = null;
       send(finalRef.current);
@@ -316,11 +367,13 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   }
 
   function reset() {
+    const activity = begin("Resetting the panel…");
     startTransition(async () => {
       setHtml(await resetUI());
       setTranscript("");
       setMessage("");
       setError("");
+      end(activity, { text: "Panel reset" });
     });
   }
 
@@ -331,10 +384,10 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
         title="Generated UI"
         srcDoc={withBridge(html)}
         sandbox="allow-scripts allow-forms allow-modals allow-popups"
-        className={`h-full w-full border-0 transition-opacity ${isPending ? "opacity-60" : ""}`}
+        className={`h-[calc(100%-1.75rem)] w-full border-0 transition-opacity ${isPending ? "opacity-60" : ""}`}
       />
 
-      <div ref={controlsRef} className="pointer-events-none fixed bottom-6 right-6 flex flex-col items-end gap-3">
+      <div ref={controlsRef} className="pointer-events-none fixed bottom-10 right-6 flex flex-col items-end gap-3">
         {(transcript || message || error) && (
           <div className="pointer-events-auto max-w-sm rounded-2xl bg-zinc-900/90 px-4 py-3 text-sm text-zinc-100 shadow-xl backdrop-blur">
             {transcript && (
@@ -457,6 +510,8 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           </button>
         </div>
       </div>
+      <StatusBar activities={activities} last={last} model={describeModel(settings)} />
+
       {settingsOpen && (
         <SettingsDialog
           settings={settings}
@@ -466,6 +521,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
             setTranscript("");
             setError("");
             setMessage("Imported the panel.");
+            note("Panel imported");
           }}
         />
       )}
