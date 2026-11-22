@@ -56,24 +56,34 @@ const noopSubscribe = () => () => {};
 // Injected into every rendered document (not stored server-side) so generated pages can
 // call askLLM(request, context) to send a follow-up request back through the LLM, and
 // fetchData(url, instruction) to get JSON extracted from a web page by the server.
+// Messages wait in a queue until the parent says it's listening (genui:ready). The
+// iframe is in the server-rendered HTML, so its scripts can run before React hydrates.
 const BRIDGE_SCRIPT = `<script>(function(){
+  var ready = false, queue = [];
+  function send(msg) { if (ready) parent.postMessage(msg, "*"); else queue.push(msg); }
   window.askLLM = function (request, context) {
     if (typeof request !== "string" || !request.trim()) return;
     var ctx;
     try { ctx = context === undefined ? undefined : JSON.parse(JSON.stringify(context)); } catch (e) {}
-    parent.postMessage({ type: "genui:ask", request: request, context: ctx }, "*");
+    send({ type: "genui:ask", request: request, context: ctx });
   };
   var pending = {}, next = 0;
   window.fetchData = function (url, instruction) {
     return new Promise(function (resolve, reject) {
       var id = ++next;
       pending[id] = { resolve: resolve, reject: reject };
-      parent.postMessage({ type: "genui:fetch", id: id, url: String(url), instruction: String(instruction) }, "*");
+      send({ type: "genui:fetch", id: id, url: String(url), instruction: String(instruction) });
     });
   };
   window.addEventListener("message", function (e) {
     var d = e.data;
-    if (e.source !== parent || !d || d.type !== "genui:fetch:result" || !pending[d.id]) return;
+    if (e.source !== parent || !d) return;
+    if (d.type === "genui:ready" && !ready) {
+      ready = true;
+      queue.splice(0).forEach(function (m) { parent.postMessage(m, "*"); });
+      return;
+    }
+    if (d.type !== "genui:fetch:result" || !pending[d.id]) return;
     var p = pending[d.id];
     delete pending[d.id];
     if (d.error) p.reject(new Error(d.error));
@@ -273,8 +283,14 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
       sendRef.current(data.request.slice(0, 2000), { source: "panel", context: data.context });
     }
     window.addEventListener("message", onMessage);
+    signalReady();
     return () => window.removeEventListener("message", onMessage);
   }, [begin, end]);
+
+  // Tells the page's bridge that messages can flow; also sent on every iframe (re)load.
+  function signalReady() {
+    iframeRef.current?.contentWindow?.postMessage({ type: "genui:ready" }, "*");
+  }
 
   // continuous keeps listening through pauses, for push-to-talk where release ends it.
   function startListening(continuous = false) {
@@ -381,6 +397,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     <div className="fixed inset-0 bg-white">
       <iframe
         ref={iframeRef}
+        onLoad={signalReady}
         title="Generated UI"
         srcDoc={withBridge(html)}
         sandbox="allow-scripts allow-forms allow-modals allow-popups"
