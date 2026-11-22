@@ -44,10 +44,12 @@ export default function StatusBar({
   activities,
   last,
   model,
+  panel,
 }: {
   activities: Activity[];
   last: Outcome | null;
   model: string;
+  panel?: React.ReactNode;
 }) {
   const [now, setNow] = useState(0);
   const busy = activities.length > 0;
@@ -95,6 +97,7 @@ export default function StatusBar({
         </>
       )}
       <span className="ml-auto hidden shrink-0 text-zinc-500 sm:inline">{model}</span>
+      {panel && <span className="shrink-0">{panel}</span>}
     </div>
   );
 }

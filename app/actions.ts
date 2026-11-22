@@ -16,8 +16,8 @@ import {
 import { extractFromPage } from "@/lib/extract";
 import { parseModelChoice, resolveModel } from "@/lib/models";
 import { MAX_PANEL_REQUESTS, MAX_REQUEST_CHARS, type PanelData } from "@/lib/panel-file";
-import { getSession, INITIAL_HTML, recordRequest, resetSession } from "@/lib/ui-store";
 
+// Identifies a browser for rate limiting only; panels are stored in the browser.
 const SESSION_COOKIE = "genui_session";
 
 async function sessionId(): Promise<string> {
@@ -31,6 +31,17 @@ async function sessionId(): Promise<string> {
 }
 
 export type UIResult = { html: string; message: string; error?: string };
+
+// The panel as the browser holds it: validated here because server actions take untrusted input.
+function parsePanel(value: unknown): PanelData {
+  const v = value as Partial<PanelData> | null;
+  if (typeof v?.html !== "string") throw new Error("Missing panel.");
+  if (v.html.length > MAX_HTML_CHARS) throw new Error("The page is too large.");
+  const requests = Array.isArray(v.requests)
+    ? v.requests.filter((r): r is string => typeof r === "string").map((r) => r.slice(0, MAX_REQUEST_CHARS))
+    : [];
+  return { html: v.html, requests: requests.slice(-MAX_PANEL_REQUESTS) };
+}
 export type { RequestOrigin };
 
 export type LoginState = { error: string };
@@ -42,20 +53,30 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
     return { error: "Wrong password." };
   }
   await setAuthCookie();
-  redirect("/");
+  // Back to the panel that asked for the sign-in, if any.
+  const next = String(formData.get("next") ?? "");
+  redirect(/^\/p\/[A-Z0-9]{8}$/.test(next) ? next : "/");
 }
 
+// Runs the model on the panel the browser sends and returns the new page and history.
+// Nothing is stored here: the browser saves the result as the panel's next version.
 export async function submitRequest(
   transcript: string,
-  origin: RequestOrigin = { source: "voice" },
-  modelChoice?: unknown,
-): Promise<UIResult> {
+  origin: RequestOrigin,
+  modelChoice: unknown,
+  panel: unknown,
+): Promise<UIResult & { requests?: string[] }> {
   if (!(await isAuthenticated())) {
     return { html: "", message: "", error: "Not signed in. Reload the page." };
   }
+  let doc: PanelData;
+  try {
+    doc = parsePanel(panel);
+  } catch (err) {
+    return { html: "", message: "", error: (err as Error).message };
+  }
   const text = transcript.trim().slice(0, 4000);
-  const session = getSession(await sessionId());
-  if (!text) return { html: session.html, message: "" };
+  if (!text) return { html: doc.html, message: "" };
 
   try {
     // The user's own key (if any) is used for this call only; it is never stored or logged.
@@ -63,39 +84,18 @@ export async function submitRequest(
     const result = await generateText({
       model,
       system: SYSTEM,
-      prompt: buildPrompt(session, text, origin),
-      tools: buildTools(session),
+      prompt: buildPrompt(doc, text, origin),
+      tools: buildTools(doc),
       stopWhen: isStepCount(8),
       maxOutputTokens: 32000,
       providerOptions,
     });
-    recordRequest(session, historyEntry(text, origin));
-    return { html: session.html, message: result.text };
+    const requests = [...doc.requests, historyEntry(text, origin)].slice(-MAX_PANEL_REQUESTS);
+    return { html: doc.html, message: result.text, requests };
   } catch (err) {
     console.error("submitRequest failed:", err instanceof Error ? err.message : err);
-    return {
-      html: session.html,
-      message: "",
-      error: err instanceof Error ? err.message : "Something went wrong.",
-    };
+    return { html: "", message: "", error: err instanceof Error ? err.message : "Something went wrong." };
   }
-}
-
-// Local (in-browser) model: the page runs the model itself. It reads the session first
-// and saves the result after, so history and Reset work the same as with remote models.
-export async function getLocalContext(): Promise<{ html: string; requests: string[]; fresh: boolean }> {
-  if (!(await isAuthenticated())) throw new Error("Not signed in. Reload the page.");
-  const session = getSession(await sessionId());
-  return { html: session.html, requests: [...session.requests], fresh: session.html === INITIAL_HTML };
-}
-
-export async function saveLocalResult(html: string, request: string): Promise<void> {
-  if (!(await isAuthenticated())) throw new Error("Not signed in. Reload the page.");
-  if (typeof html !== "string" || typeof request !== "string") throw new Error("Bad input.");
-  if (html.length > MAX_HTML_CHARS) throw new Error("The page is too large.");
-  const session = getSession(await sessionId());
-  session.html = html;
-  recordRequest(session, request.slice(0, 4000));
 }
 
 export type ExtractResult = { data?: unknown; url?: string; fetchedAt?: string; cached?: boolean; error?: string };
@@ -126,32 +126,4 @@ export async function extractData(url: unknown, instruction: unknown, modelChoic
     console.error("extractData failed:", err instanceof Error ? err.message : err);
     return { error: err instanceof Error ? err.message : "Couldn't read that page." };
   }
-}
-
-export async function exportPanel(): Promise<PanelData> {
-  if (!(await isAuthenticated())) throw new Error("Not signed in. Reload the page.");
-  const session = getSession(await sessionId());
-  return { html: session.html, requests: [...session.requests] };
-}
-
-// Replaces the session with an exported panel; returns the HTML to show.
-export async function importPanel(data: unknown): Promise<{ html?: string; error?: string }> {
-  if (!(await isAuthenticated())) return { error: "Not signed in. Reload the page." };
-  const v = data as Partial<PanelData> | null;
-  if (typeof v?.html !== "string" || !v.html.trim()) return { error: "The file has no page in it." };
-  if (v.html.length > MAX_HTML_CHARS) return { error: "The page in that file is too large." };
-  const requests = Array.isArray(v.requests)
-    ? v.requests.filter((r): r is string => typeof r === "string").map((r) => r.slice(0, MAX_REQUEST_CHARS))
-    : [];
-  const session = getSession(await sessionId());
-  session.html = v.html;
-  session.requests = requests.slice(-MAX_PANEL_REQUESTS);
-  return { html: session.html };
-}
-
-export async function resetUI(): Promise<string> {
-  if (!(await isAuthenticated())) throw new Error("Not signed in.");
-  const id = await sessionId();
-  resetSession(id);
-  return getSession(id).html;
 }

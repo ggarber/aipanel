@@ -1,14 +1,10 @@
 "use client";
 
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
-import {
-  extractData,
-  getLocalContext,
-  resetUI,
-  saveLocalResult,
-  submitRequest,
-  type RequestOrigin,
-} from "./actions";
+import Link from "next/link";
+import { extractData, submitRequest, type RequestOrigin } from "./actions";
+import { INITIAL_HTML } from "@/lib/initial-html";
+import { getPanel, savePanel, subscribePanels } from "@/lib/panel-store";
 import { historyEntry } from "@/lib/genui";
 import { runLocalModel } from "@/lib/local-model";
 import {
@@ -107,8 +103,11 @@ type Status = "idle" | "listening" | "thinking";
 // Holding the main button this long starts push-to-talk instead of opening the menu.
 const HOLD_MS = 300;
 
-export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
-  const [html, setHtml] = useState(initialHtml);
+export default function GenerativeUI({ code }: { code: string }) {
+  // The page shown is always the newest stored version of this panel, so saves from this
+  // tab or another one show up here, and an older copy never replaces a newer one.
+  const panel = useSyncExternalStore(subscribePanels, () => getPanel(code), () => null);
+  const html = panel?.html ?? INITIAL_HTML;
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [message, setMessage] = useState("");
@@ -185,11 +184,18 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     const started = Date.now();
     startTransition(async () => {
       try {
+        const doc = getPanel(code) ?? { html: INITIAL_HTML, requests: [] };
         const result =
           current.source === "local"
-            ? await runLocal(trimmed, origin, activity)
-            : await submitRequest(trimmed, origin, remoteChoice(current));
-        if (result.html) setHtml(result.html);
+            ? await runLocal(trimmed, origin, activity, doc)
+            : await submitRequest(trimmed, origin, remoteChoice(current), { html: doc.html, requests: doc.requests });
+        if (!result.error && result.requests) {
+          try {
+            savePanel(code, { html: result.html, requests: result.requests });
+          } catch (err) {
+            result.error = (err as Error).message;
+          }
+        }
         setMessage(result.message);
         if (result.error) setError(result.error);
         end(
@@ -205,7 +211,12 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     });
   }
 
-  async function runLocal(text: string, origin: RequestOrigin, activity: number) {
+  async function runLocal(
+    text: string,
+    origin: RequestOrigin,
+    activity: number,
+    doc: { html: string; requests: string[] },
+  ): Promise<{ html: string; message: string; requests?: string[]; error?: string }> {
     const onProgress = (fraction: number) => {
       setDownload(fraction);
       update(
@@ -216,10 +227,8 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
       );
     };
     try {
-      const doc = await getLocalContext();
-      const result = await runLocalModel(doc, text, origin, onProgress);
-      await saveLocalResult(result.html, historyEntry(text, origin));
-      return { ...result, error: undefined };
+      const result = await runLocalModel({ ...doc, fresh: doc.html === INITIAL_HTML }, text, origin, onProgress);
+      return { ...result, requests: [...doc.requests, historyEntry(text, origin)] };
     } catch (err) {
       return { html: "", message: "", error: err instanceof Error ? err.message : "The built-in model failed." };
     }
@@ -383,14 +392,15 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   }
 
   function reset() {
-    const activity = begin("Resetting the panel…");
-    startTransition(async () => {
-      setHtml(await resetUI());
+    try {
+      savePanel(code, { html: INITIAL_HTML, requests: [] });
       setTranscript("");
       setMessage("");
       setError("");
-      end(activity, { text: "Panel reset" });
-    });
+      note("Panel reset");
+    } catch (err) {
+      note((err as Error).message, true);
+    }
   }
 
   return (
@@ -527,14 +537,24 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           </button>
         </div>
       </div>
-      <StatusBar activities={activities} last={last} model={describeModel(settings)} />
+      <StatusBar
+        activities={activities}
+        last={last}
+        model={describeModel(settings)}
+        panel={
+          <Link href="/" title="Back to your panels" className="font-mono text-amber-300 hover:text-amber-200">
+            {code} · v{panel?.version ?? 0}
+          </Link>
+        }
+      />
 
       {settingsOpen && (
         <SettingsDialog
           settings={settings}
           onClose={() => setSettingsOpen(false)}
+          panel={panel}
           onImported={(imported) => {
-            setHtml(imported);
+            savePanel(code, imported);
             setTranscript("");
             setError("");
             setMessage("Imported the panel.");

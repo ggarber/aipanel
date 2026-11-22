@@ -3,13 +3,14 @@
 import { useActionState } from "react";
 import { login, type LoginState } from "./actions";
 
-export default function LoginForm() {
+export default function LoginForm({ next }: { next?: string }) {
   const [state, formAction, isPending] = useActionState<LoginState, FormData>(login, { error: "" });
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-4">
       <form action={formAction} className="w-full max-w-xs space-y-3 rounded-2xl bg-white p-6 shadow-lg">
         <h1 className="text-lg font-semibold text-zinc-900">Voice UI</h1>
+        {next && <input type="hidden" name="next" value={next} />}
         <input
           type="password"
           name="password"

@@ -13,9 +13,9 @@ export function toPanelFile(data: PanelData): PanelFile {
   return { format: PANEL_FORMAT, version: PANEL_VERSION, exportedAt: new Date().toISOString(), ...data };
 }
 
-export function panelFileName(date = new Date()): string {
+export function panelFileName(code: string, date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `aipanel-${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}.json`;
+  return `aipanel-${code}-${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}.json`;
 }
 
 // Accepts an export file, or a plain .html document (imported with no history).
@@ -32,7 +32,8 @@ export function parsePanelFile(text: string): PanelData {
     if (typeof v.version !== "number" || v.version > PANEL_VERSION) {
       throw new Error("That export comes from a newer version of aipanel.");
     }
-    return { html: v.html, requests: Array.isArray(v.requests) ? v.requests : [] };
+    const requests = Array.isArray(v.requests) ? v.requests.filter((r): r is string => typeof r === "string") : [];
+    return { html: v.html, requests: requests.map((r) => r.slice(0, MAX_REQUEST_CHARS)).slice(-MAX_PANEL_REQUESTS) };
   }
   if (/^<(!doctype html|html[\s>])/i.test(trimmed)) return { html: text, requests: [] };
   throw new Error("Import an aipanel .json export or an .html file.");

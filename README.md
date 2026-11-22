@@ -14,6 +14,13 @@ npm run dev
 
 Open http://localhost:3000 in Chrome, Edge or Safari.
 
+## Panels and codes
+
+- **`/`** is the game-style home screen. Type a panel's code (8 characters, `A–Z` and `0–9`; lowercase and separators are cleaned up) and press **OPEN**, or press **+ NEW PANEL** to create one with a random code. Below that are the panels saved in this browser, with their version, title and last update, and a two-click delete.
+- **`/p/<CODE>`** opens a panel if this browser has it, or shows "Panel not found". Lowercase codes redirect to uppercase, and invalid ones go home.
+- Panels exist only on the device that made them. To move one, use Export / Import.
+- The password gate (`APP_PASSWORD`) still protects every page. After signing in, you return to the panel you were opening.
+
 ## Models
 
 The gear button opens Settings. The choice is saved in this browser.
@@ -35,8 +42,8 @@ When nothing is running, it shows the last outcome with its time: how long a cal
 ## Export and import
 
 Settings → Panel:
-- **Export** downloads the panel as stored on the server: `{"format": "aipanel", "version": 1, "exportedAt", "html", "requests"}` (`lib/panel-file.ts`).
-- **Import** replaces the current panel with an export file, or with a plain `.html` page, which is imported with no history.
+- **Export** downloads `aipanel-<CODE>-<date>.json`: `{"format": "aipanel", "version": 1, "exportedAt", "html", "requests", "code", "panelVersion"}` (`lib/panel-file.ts`).
+- **Import** saves an export file, or a plain `.html` page (imported with no history), as the open panel's next version.
 
 ## How it works
 
@@ -48,5 +55,5 @@ Settings → Panel:
 
   The tools change the session's HTML in place, and the action returns the result. Generated pages use plain JavaScript for local interactions and call the injected `askLLM(request, context)` for anything that needs the model.
 - Live data: generated pages call the injected `fetchData(url, instruction)`, which the page can run on load and on a timer. The main page passes it to the `extractData` server action. `lib/crawl.ts` downloads the page (public http(s) hosts only, 10 s timeout, 3 MB cap) and reduces it to text with table rows kept. `lib/extract.ts` then has the selected model return JSON (`Output.json()`). The page renders that JSON itself. Results are cached for 5 minutes per URL + instruction, and each session gets 30 requests per 10 minutes. Sites that build their content with client-side JavaScript have no data in their HTML and won't work.
-- `lib/ui-store.ts`: an in-memory store, keyed by an httpOnly session cookie. It holds the last HTML and recent requests. It works for a single server process. Use Redis/KV to keep sessions across restarts or on serverless.
+- `lib/panel-store.ts`: panels live only in the browser's `localStorage`, one key per code (`aipanel:panel:<CODE>`), holding `{ code, version, html, requests, createdAt, updatedAt }`. Every save bumps `version`. The panel view always shows the newest stored version, so a save in another tab shows up, and an older copy never replaces a newer one. The server keeps no panel state: `submitRequest` gets the current page and history from the browser and returns the new ones.
 - `lib/auth.ts`: a password gate. The page and server actions require a cookie that is set after entering `APP_PASSWORD`.
