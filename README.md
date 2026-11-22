@@ -22,6 +22,16 @@ The gear button opens Settings. The choice is saved in this browser.
 - **Gemini / OpenAI / Anthropic with your own key:** the key and model name are stored in this browser's `localStorage` and sent with each request. The server uses them for that call only. It never stores or logs them (`logging.serverFunctions` is off in `next.config.ts`, since dev logs would print action arguments).
 - **In this browser:** Chrome's built-in Gemini Nano via the [Prompt API](https://developer.chrome.com/docs/ai/prompt-api). It needs a recent desktop Chrome, and Chrome downloads the model (a few GB) on first use. The model runs in the page with a short prompt of its own (`lib/local-model.ts`), because its context window is about 9k tokens and it handles neither tools nor long JSON well. It returns the whole new document as plain HTML, which is saved back to the session. These browsers support the Web Speech API. In other browsers a text box replaces the mic.
 
+## Status line
+
+A bar along the bottom (`app/status-bar.tsx`) shows what is running right now, with a live timer:
+- an LLM call, with the model and where it runs (server Gemini, your own key, or Gemini Nano in the browser);
+- the Gemini Nano download progress;
+- `fetchData` refreshes, with the site and the model reading it;
+- listening and Reset.
+
+When nothing is running, it shows the last outcome with its time: how long a call took, "cached" for data under 5 minutes old, or the error. The current model is always shown on the right.
+
 ## Export and import
 
 Settings → Panel:

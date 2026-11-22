@@ -7,6 +7,9 @@ export const PROVIDERS = {
 } as const;
 
 export type ProviderId = keyof typeof PROVIDERS;
+
+// The model behind "Server default", using the server's GOOGLE_GENERATIVE_AI_API_KEY.
+export const SERVER_MODEL = "gemini-3.8-flash";
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[];
 
 // "server": the server's own Gemini key, as before. "local": Chrome's built-in model.
@@ -29,6 +32,19 @@ export function isProviderId(value: unknown): value is ProviderId {
 
 export function modelFor(settings: ModelSettings, provider: ProviderId): string {
   return settings.models[provider]?.trim() || PROVIDERS[provider].defaultModel;
+}
+
+// Human-readable model + where it runs, for the status line.
+export function describeModel(settings: ModelSettings): string {
+  const { source } = settings;
+  if (source === "server") return `Gemini ${SERVER_MODEL} (server)`;
+  if (source === "local") return "Gemini Nano (in this browser)";
+  return `${PROVIDERS[source].label} ${modelFor(settings, source)} (your key)`;
+}
+
+// fetchData extraction always runs on the server; local mode falls back to the server model.
+export function describeExtractionModel(settings: ModelSettings): string {
+  return settings.source === "local" ? describeModel({ ...settings, source: "server" }) : describeModel(settings);
 }
 
 export function remoteChoice(settings: ModelSettings): RemoteModelChoice | undefined {

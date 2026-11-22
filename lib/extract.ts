@@ -8,7 +8,7 @@ import type { RemoteModelChoice } from "./model-settings";
 const CACHE_MS = 5 * 60_000;
 const MAX_CACHE = 200;
 
-type Extracted = { data: unknown; url: string; fetchedAt: string };
+type Extracted = { data: unknown; url: string; fetchedAt: string; cached?: boolean };
 
 // Keyed by URL + instruction, so widgets refreshing on a timer don't refetch and re-run
 // the model more than once per CACHE_MS. In-flight requests are shared too.
@@ -24,7 +24,7 @@ export function extractFromPage(url: string, instruction: string, choice: Remote
   // The cache is shared, so it must not mix results from the server's model and a user's key.
   const key = JSON.stringify([url, instruction, choice ? `${choice.provider}:${choice.model}` : "server"]);
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.value.then((v: Extracted) => ({ ...v, cached: true }));
 
   const value = (async () => {
     const page = await fetchPage(url);

@@ -4,11 +4,10 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI, google } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
-import { isProviderId, type ProviderId, type RemoteModelChoice } from "./model-settings";
+import { isProviderId, SERVER_MODEL, type ProviderId, type RemoteModelChoice } from "./model-settings";
 
 type ProviderOptions = Parameters<typeof import("ai").generateText>[0]["providerOptions"];
 
-const SERVER_MODEL = "gemini-3.8-flash";
 
 // Server actions take untrusted input, so check the shape before using it.
 export function parseModelChoice(value: unknown): RemoteModelChoice | null {
