@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { exportPanel, importPanel } from "./actions";
+import { panelFileName, parsePanelFile, toPanelFile } from "@/lib/panel-file";
 import { localAvailability } from "@/lib/local-model";
 import {
   PROVIDER_IDS,
@@ -22,9 +24,11 @@ const LOCAL_STATUS: Record<string, string> = {
 export default function SettingsDialog({
   settings,
   onClose,
+  onImported,
 }: {
   settings: ModelSettings;
   onClose: () => void;
+  onImported: (html: string) => void;
 }) {
   const [draft, setDraft] = useState(settings);
   const provider = isProviderId(draft.source) ? draft.source : null;
@@ -37,6 +41,45 @@ export default function SettingsDialog({
       live = false;
     };
   }, []);
+
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [panelStatus, setPanelStatus] = useState<{ text: string; error?: boolean } | null>(null);
+  const [panelBusy, setPanelBusy] = useState(false);
+
+  async function doExport() {
+    setPanelBusy(true);
+    setPanelStatus(null);
+    try {
+      const file = toPanelFile(await exportPanel());
+      const url = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = panelFileName();
+      a.click();
+      URL.revokeObjectURL(url);
+      setPanelStatus({ text: `Exported ${a.download}.` });
+    } catch (err) {
+      setPanelStatus({ text: err instanceof Error ? err.message : "Export failed.", error: true });
+    } finally {
+      setPanelBusy(false);
+    }
+  }
+
+  async function doImport(file: File) {
+    setPanelBusy(true);
+    setPanelStatus(null);
+    try {
+      const result = await importPanel(parsePanelFile(await file.text()));
+      if (result.error || !result.html) throw new Error(result.error ?? "Import failed.");
+      onImported(result.html);
+      onClose();
+    } catch (err) {
+      setPanelStatus({ text: err instanceof Error ? err.message : "Import failed.", error: true });
+    } finally {
+      setPanelBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
 
   function save(e: React.FormEvent) {
     e.preventDefault();
@@ -116,6 +159,48 @@ export default function SettingsDialog({
             </label>
           </div>
         )}
+
+        <section className="space-y-2 border-t border-zinc-200 pt-4">
+          <h3 className="font-medium">Panel</h3>
+          <p className="text-xs text-zinc-500">
+            Export saves the current page and its request history to a file. Import replaces the current panel with
+            one from a file (an export, or a plain .html page).
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={doExport}
+              disabled={panelBusy}
+              className="rounded-full border border-zinc-300 px-4 py-1.5 hover:bg-zinc-100 disabled:opacity-50"
+            >
+              Export
+            </button>
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={panelBusy}
+              className="rounded-full border border-zinc-300 px-4 py-1.5 hover:bg-zinc-100 disabled:opacity-50"
+            >
+              Import…
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".json,.html,.htm,application/json,text/html"
+              className="hidden"
+              aria-label="Panel file to import"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) doImport(file);
+              }}
+            />
+          </div>
+          {panelStatus && (
+            <p role="status" className={`text-xs ${panelStatus.error ? "text-red-600" : "text-zinc-600"}`}>
+              {panelStatus.text}
+            </p>
+          )}
+        </section>
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="rounded-full px-4 py-2 text-zinc-600 hover:bg-zinc-100">

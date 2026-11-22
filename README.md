@@ -22,6 +22,12 @@ The gear button opens Settings. The choice is saved in this browser.
 - **Gemini / OpenAI / Anthropic with your own key:** the key and model name are stored in this browser's `localStorage` and sent with each request. The server uses them for that call only. It never stores or logs them (`logging.serverFunctions` is off in `next.config.ts`, since dev logs would print action arguments).
 - **In this browser:** Chrome's built-in Gemini Nano via the [Prompt API](https://developer.chrome.com/docs/ai/prompt-api). It needs a recent desktop Chrome, and Chrome downloads the model (a few GB) on first use. The model runs in the page with a short prompt of its own (`lib/local-model.ts`), because its context window is about 9k tokens and it handles neither tools nor long JSON well. It returns the whole new document as plain HTML, which is saved back to the session. These browsers support the Web Speech API. In other browsers a text box replaces the mic.
 
+## Export and import
+
+Settings → Panel:
+- **Export** downloads the panel as stored on the server: `{"format": "aipanel", "version": 1, "exportedAt", "html", "requests"}` (`lib/panel-file.ts`).
+- **Import** replaces the current panel with an export file, or with a plain `.html` page, which is imported with no history.
+
 ## How it works
 
 - `app/generative-ui.tsx` (client): `SpeechRecognition` transcribes speech. On end it calls the `submitRequest` server action and renders the returned HTML in a sandboxed `<iframe srcDoc>`.
