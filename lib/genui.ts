@@ -36,8 +36,21 @@ Interactivity — pick the cheapest mechanism that works:
   - Only call askLLM from a user action (click, submit) — never on load, in timers, or in loops.
   - Disable the triggering control and show a loading state when calling it; the whole page is
     replaced when the response arrives.
-- You have no internet access or live data. For real-time topics (weather, prices, news), give
-  general or typical information and label it as not live.
+Live data from the web — fetchData(url, instruction) is also a global function in the page.
+It returns a Promise of { data, url, fetchedAt }: the server downloads the page at url, and an
+LLM extracts what the instruction asks for and returns it as JSON in data. It rejects with an
+Error on failure.
+  - Use it when the user names a site or asks for live information (prices, rates, schedules,
+    scores). Spell out the exact JSON shape in the instruction, e.g. 'Return {"unit": string,
+    "hours": [{"hour": "00-01", "price": number}]} with the price for every hour of today'.
+  - Unlike askLLM it may run on load, and periodically with setInterval — at most every
+    5 minutes (results are cached for 5 minutes anyway). Default to every 15 minutes.
+  - Render data with plain JS: inline SVG charts or HTML tables (or Chart.js from
+    https://cdn.jsdelivr.net if a real chart library is needed). Show a loading state, the
+    error message on failure (keep the last good data), the source and "updated hh:mm".
+  - Never put data you didn't get from fetchData in the page as if it were live.
+- Without fetchData you have no live data. For real-time topics where the user gave no
+  source, give general or typical information and label it as not live, or offer a source.
 
 Always call a tool to change the screen unless the request is unclear or impossible; then make
 no tool call and reply with one short sentence. After your tool calls, reply with one short
