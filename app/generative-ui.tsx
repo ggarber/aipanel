@@ -1,7 +1,17 @@
 "use client";
 
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
-import { resetUI, submitRequest, type RequestOrigin } from "./actions";
+import { getLocalContext, resetUI, saveLocalResult, submitRequest, type RequestOrigin } from "./actions";
+import { historyEntry } from "@/lib/genui";
+import { runLocalModel } from "@/lib/local-model";
+import {
+  getServerSettings,
+  getSettings,
+  PROVIDERS,
+  remoteChoice,
+  subscribeSettings,
+} from "@/lib/model-settings";
+import SettingsDialog from "./settings-dialog";
 
 // Minimal Web Speech API typings (not in lib.dom for all TS versions).
 type SpeechRecognitionResultLike = { isFinal: boolean; 0: { transcript: string } };
@@ -67,6 +77,10 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   const [typed, setTyped] = useState("");
   const [textOpen, setTextOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Download progress (0–1) of the built-in model, while it downloads on first use.
+  const [download, setDownload] = useState<number | null>(null);
+  const settings = useSyncExternalStore(subscribeSettings, getSettings, getServerSettings);
   // true on the server so the button doesn't flash a disabled state before hydration.
   const supported = useSyncExternalStore(
     noopSubscribe,
@@ -126,14 +140,29 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     setError("");
     startTransition(async () => {
       try {
-        const result = await submitRequest(trimmed, origin);
+        const result =
+          getSettings().source === "local"
+            ? await runLocal(trimmed, origin)
+            : await submitRequest(trimmed, origin, remoteChoice(getSettings()));
         if (result.html) setHtml(result.html);
         setMessage(result.message);
         if (result.error) setError(result.error);
       } finally {
         busyRef.current = false;
+        setDownload(null);
       }
     });
+  }
+
+  async function runLocal(text: string, origin: RequestOrigin) {
+    try {
+      const doc = await getLocalContext();
+      const result = await runLocalModel(doc, text, origin, setDownload);
+      await saveLocalResult(result.html, historyEntry(text, origin));
+      return { ...result, error: undefined };
+    } catch (err) {
+      return { html: "", message: "", error: err instanceof Error ? err.message : "The built-in model failed." };
+    }
   }
 
   const sendRef = useRef(send);
@@ -266,7 +295,13 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
                 {transcript}
               </p>
             )}
-            {status === "thinking" && <p className="mt-1 animate-pulse text-zinc-400">Updating the UI…</p>}
+            {status === "thinking" && (
+              <p className="mt-1 animate-pulse text-zinc-400">
+                {download !== null && download < 1
+                  ? `Downloading the built-in model… ${Math.round(download * 100)}%`
+                  : "Updating the UI…"}
+              </p>
+            )}
             {message && status !== "thinking" && <p className="mt-1">{message}</p>}
             {error && <p className="mt-1 text-red-400">{error}</p>}
           </div>
@@ -326,6 +361,17 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
 
         <div className="pointer-events-auto flex items-center gap-2">
           <button
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Settings"
+            title={`Model: ${settings.source === "server" ? "server default" : settings.source === "local" ? "built-in (Chrome)" : PROVIDERS[settings.source].label}`}
+            className="flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-zinc-600 shadow hover:bg-white"
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+          <button
             onClick={reset}
             disabled={isPending}
             className="rounded-full bg-white/90 px-3 py-1.5 text-xs text-zinc-600 shadow hover:bg-white disabled:opacity-50"
@@ -363,6 +409,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           </button>
         </div>
       </div>
+      {settingsOpen && <SettingsDialog settings={settings} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

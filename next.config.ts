@@ -4,6 +4,8 @@ const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
+  // Dev logs print server action arguments, which include user API keys and passwords.
+  logging: { serverFunctions: false },
   turbopack: {
     rules: {
       "*.css": {
