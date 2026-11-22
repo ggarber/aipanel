@@ -457,7 +457,18 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           </button>
         </div>
       </div>
-      {settingsOpen && <SettingsDialog settings={settings} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsDialog
+          settings={settings}
+          onClose={() => setSettingsOpen(false)}
+          onImported={(imported) => {
+            setHtml(imported);
+            setTranscript("");
+            setError("");
+            setMessage("Imported the panel.");
+          }}
+        />
+      )}
     </div>
   );
 }

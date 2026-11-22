@@ -15,6 +15,7 @@ import {
 } from "@/lib/genui";
 import { extractFromPage } from "@/lib/extract";
 import { parseModelChoice, resolveModel } from "@/lib/models";
+import { MAX_PANEL_REQUESTS, MAX_REQUEST_CHARS, type PanelData } from "@/lib/panel-file";
 import { getSession, INITIAL_HTML, recordRequest, resetSession } from "@/lib/ui-store";
 
 const SESSION_COOKIE = "genui_session";
@@ -125,6 +126,27 @@ export async function extractData(url: unknown, instruction: unknown, modelChoic
     console.error("extractData failed:", err instanceof Error ? err.message : err);
     return { error: err instanceof Error ? err.message : "Couldn't read that page." };
   }
+}
+
+export async function exportPanel(): Promise<PanelData> {
+  if (!(await isAuthenticated())) throw new Error("Not signed in. Reload the page.");
+  const session = getSession(await sessionId());
+  return { html: session.html, requests: [...session.requests] };
+}
+
+// Replaces the session with an exported panel; returns the HTML to show.
+export async function importPanel(data: unknown): Promise<{ html?: string; error?: string }> {
+  if (!(await isAuthenticated())) return { error: "Not signed in. Reload the page." };
+  const v = data as Partial<PanelData> | null;
+  if (typeof v?.html !== "string" || !v.html.trim()) return { error: "The file has no page in it." };
+  if (v.html.length > MAX_HTML_CHARS) return { error: "The page in that file is too large." };
+  const requests = Array.isArray(v.requests)
+    ? v.requests.filter((r): r is string => typeof r === "string").map((r) => r.slice(0, MAX_REQUEST_CHARS))
+    : [];
+  const session = getSession(await sessionId());
+  session.html = v.html;
+  session.requests = requests.slice(-MAX_PANEL_REQUESTS);
+  return { html: session.html };
 }
 
 export async function resetUI(): Promise<string> {
