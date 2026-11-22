@@ -1,22 +1,16 @@
 import { Suspense } from "react";
-import { cookies } from "next/headers";
 import { isAuthenticated } from "@/lib/auth";
-import { getSession, INITIAL_HTML } from "@/lib/ui-store";
-import GenerativeUI from "./generative-ui";
+import Home from "./home";
 import LoginForm from "./login-form";
 
-// Reads cookies, so it renders per request inside a Suspense boundary.
-async function SessionUI() {
-  if (!(await isAuthenticated())) return <LoginForm />;
-  const id = (await cookies()).get("genui_session")?.value;
-  const html = id ? getSession(id).html : INITIAL_HTML;
-  return <GenerativeUI initialHtml={html} />;
+async function Gate() {
+  return (await isAuthenticated()) ? <Home /> : <LoginForm />;
 }
 
-export default function Home() {
+export default function Page() {
   return (
     <Suspense fallback={null}>
-      <SessionUI />
+      <Gate />
     </Suspense>
   );
 }

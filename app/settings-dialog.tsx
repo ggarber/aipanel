@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { exportPanel, importPanel } from "./actions";
-import { panelFileName, parsePanelFile, toPanelFile } from "@/lib/panel-file";
+import { panelFileName, parsePanelFile, toPanelFile, type PanelData } from "@/lib/panel-file";
+import type { StoredPanel } from "@/lib/panel-store";
 import { localAvailability } from "@/lib/local-model";
 import {
   PROVIDER_IDS,
@@ -24,11 +24,13 @@ const LOCAL_STATUS: Record<string, string> = {
 export default function SettingsDialog({
   settings,
   onClose,
+  panel,
   onImported,
 }: {
   settings: ModelSettings;
   onClose: () => void;
-  onImported: (html: string) => void;
+  panel: StoredPanel | null;
+  onImported: (data: PanelData) => void;
 }) {
   const [draft, setDraft] = useState(settings);
   const provider = isProviderId(draft.source) ? draft.source : null;
@@ -50,11 +52,12 @@ export default function SettingsDialog({
     setPanelBusy(true);
     setPanelStatus(null);
     try {
-      const file = toPanelFile(await exportPanel());
+      if (!panel) throw new Error("Nothing to export yet.");
+      const file = { ...toPanelFile({ html: panel.html, requests: panel.requests }), code: panel.code, panelVersion: panel.version };
       const url = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: "application/json" }));
       const a = document.createElement("a");
       a.href = url;
-      a.download = panelFileName();
+      a.download = panelFileName(panel.code);
       a.click();
       URL.revokeObjectURL(url);
       setPanelStatus({ text: `Exported ${a.download}.` });
@@ -69,9 +72,9 @@ export default function SettingsDialog({
     setPanelBusy(true);
     setPanelStatus(null);
     try {
-      const result = await importPanel(parsePanelFile(await file.text()));
-      if (result.error || !result.html) throw new Error(result.error ?? "Import failed.");
-      onImported(result.html);
+      const data = parsePanelFile(await file.text());
+      if (!data.html.trim()) throw new Error("The file has no page in it.");
+      onImported(data);
       onClose();
     } catch (err) {
       setPanelStatus({ text: err instanceof Error ? err.message : "Import failed.", error: true });
