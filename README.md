@@ -31,5 +31,6 @@ The gear button opens Settings. The choice is saved in this browser.
   - `edit_html` does an exact find/replace for small changes.
 
   The tools change the session's HTML in place, and the action returns the result. Generated pages use plain JavaScript for local interactions and call the injected `askLLM(request, context)` for anything that needs the model.
+- Live data: generated pages call the injected `fetchData(url, instruction)`, which the page can run on load and on a timer. The main page passes it to the `extractData` server action. `lib/crawl.ts` downloads the page (public http(s) hosts only, 10 s timeout, 3 MB cap) and reduces it to text with table rows kept. `lib/extract.ts` then has the selected model return JSON (`Output.json()`). The page renders that JSON itself. Results are cached for 5 minutes per URL + instruction, and each session gets 30 requests per 10 minutes. Sites that build their content with client-side JavaScript have no data in their HTML and won't work.
 - `lib/ui-store.ts`: an in-memory store, keyed by an httpOnly session cookie. It holds the last HTML and recent requests. It works for a single server process. Use Redis/KV to keep sessions across restarts or on serverless.
 - `lib/auth.ts`: a password gate. The page and server actions require a cookie that is set after entering `APP_PASSWORD`.

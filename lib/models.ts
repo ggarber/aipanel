@@ -23,26 +23,31 @@ export function parseModelChoice(value: unknown): RemoteModelChoice | null {
   return { provider: v.provider, model, apiKey };
 }
 
-function optionsFor(provider: ProviderId): ProviderOptions {
-  if (provider === "google") return { google: { thinkingConfig: { thinkingLevel: "medium" } } };
+// "light" is for simple jobs such as pulling data out of a page, where thinking only adds latency.
+type Effort = "normal" | "light";
+
+function optionsFor(provider: ProviderId, effort: Effort): ProviderOptions {
+  if (provider === "google") {
+    return { google: { thinkingConfig: { thinkingLevel: effort === "light" ? "low" : "medium" } } };
+  }
   return undefined;
 }
 
-export function resolveModel(choice: RemoteModelChoice | null): {
+export function resolveModel(choice: RemoteModelChoice | null, effort: Effort = "normal"): {
   model: LanguageModel;
   providerOptions: ProviderOptions;
 } {
   if (!choice) {
     // Reads GOOGLE_GENERATIVE_AI_API_KEY.
-    return { model: google(SERVER_MODEL), providerOptions: optionsFor("google") };
+    return { model: google(SERVER_MODEL), providerOptions: optionsFor("google", effort) };
   }
   const { provider, model, apiKey } = choice;
   switch (provider) {
     case "google":
-      return { model: createGoogleGenerativeAI({ apiKey })(model), providerOptions: optionsFor(provider) };
+      return { model: createGoogleGenerativeAI({ apiKey })(model), providerOptions: optionsFor(provider, effort) };
     case "openai":
-      return { model: createOpenAI({ apiKey })(model), providerOptions: optionsFor(provider) };
+      return { model: createOpenAI({ apiKey })(model), providerOptions: optionsFor(provider, effort) };
     case "anthropic":
-      return { model: createAnthropic({ apiKey })(model), providerOptions: optionsFor(provider) };
+      return { model: createAnthropic({ apiKey })(model), providerOptions: optionsFor(provider, effort) };
   }
 }

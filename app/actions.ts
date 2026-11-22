@@ -13,6 +13,7 @@ import {
   SYSTEM,
   type RequestOrigin,
 } from "@/lib/genui";
+import { extractFromPage } from "@/lib/extract";
 import { parseModelChoice, resolveModel } from "@/lib/models";
 import { getSession, INITIAL_HTML, recordRequest, resetSession } from "@/lib/ui-store";
 
@@ -94,6 +95,36 @@ export async function saveLocalResult(html: string, request: string): Promise<vo
   const session = getSession(await sessionId());
   session.html = html;
   recordRequest(session, request.slice(0, 4000));
+}
+
+export type ExtractResult = { data?: unknown; url?: string; fetchedAt?: string; error?: string };
+
+const EXTRACT_LIMIT = 30;
+const EXTRACT_WINDOW_MS = 10 * 60_000;
+const extractCalls = new Map<string, number[]>();
+
+// Called by generated pages through fetchData(url, instruction): the server reads the page
+// and an LLM turns it into JSON; the page renders it.
+export async function extractData(url: unknown, instruction: unknown, modelChoice?: unknown): Promise<ExtractResult> {
+  if (!(await isAuthenticated())) return { error: "Not signed in. Reload the page." };
+  if (typeof url !== "string" || typeof instruction !== "string" || !instruction.trim()) {
+    return { error: "fetchData needs a URL and an instruction." };
+  }
+  if (url.length > 2000 || instruction.length > 2000) return { error: "URL or instruction too long." };
+
+  const id = await sessionId();
+  const now = Date.now();
+  const recent = (extractCalls.get(id) ?? []).filter((t) => now - t < EXTRACT_WINDOW_MS);
+  if (recent.length >= EXTRACT_LIMIT) return { error: "Too many data requests; try again in a few minutes." };
+  recent.push(now);
+  extractCalls.set(id, recent);
+
+  try {
+    return await extractFromPage(url, instruction.trim(), parseModelChoice(modelChoice));
+  } catch (err) {
+    console.error("extractData failed:", err instanceof Error ? err.message : err);
+    return { error: err instanceof Error ? err.message : "Couldn't read that page." };
+  }
 }
 
 export async function resetUI(): Promise<string> {

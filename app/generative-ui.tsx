@@ -1,7 +1,14 @@
 "use client";
 
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
-import { getLocalContext, resetUI, saveLocalResult, submitRequest, type RequestOrigin } from "./actions";
+import {
+  extractData,
+  getLocalContext,
+  resetUI,
+  saveLocalResult,
+  submitRequest,
+  type RequestOrigin,
+} from "./actions";
 import { historyEntry } from "@/lib/genui";
 import { runLocalModel } from "@/lib/local-model";
 import {
@@ -44,7 +51,8 @@ function getRecognitionCtor(): SpeechRecognitionCtor | null {
 const noopSubscribe = () => () => {};
 
 // Injected into every rendered document (not stored server-side) so generated pages can
-// call askLLM(request, context) to send a follow-up request back through the LLM.
+// call askLLM(request, context) to send a follow-up request back through the LLM, and
+// fetchData(url, instruction) to get JSON extracted from a web page by the server.
 const BRIDGE_SCRIPT = `<script>(function(){
   window.askLLM = function (request, context) {
     if (typeof request !== "string" || !request.trim()) return;
@@ -52,7 +60,25 @@ const BRIDGE_SCRIPT = `<script>(function(){
     try { ctx = context === undefined ? undefined : JSON.parse(JSON.stringify(context)); } catch (e) {}
     parent.postMessage({ type: "genui:ask", request: request, context: ctx }, "*");
   };
+  var pending = {}, next = 0;
+  window.fetchData = function (url, instruction) {
+    return new Promise(function (resolve, reject) {
+      var id = ++next;
+      pending[id] = { resolve: resolve, reject: reject };
+      parent.postMessage({ type: "genui:fetch", id: id, url: String(url), instruction: String(instruction) }, "*");
+    });
+  };
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (e.source !== parent || !d || d.type !== "genui:fetch:result" || !pending[d.id]) return;
+    var p = pending[d.id];
+    delete pending[d.id];
+    if (d.error) p.reject(new Error(d.error));
+    else p.resolve({ data: d.data, url: d.url, fetchedAt: d.fetchedAt });
+  });
 })();</script>`;
+
+const MAX_FETCHES_IN_FLIGHT = 4;
 
 function withBridge(html: string): string {
   const head = /<head[^>]*>/i.exec(html);
@@ -171,9 +197,31 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   });
 
   useEffect(() => {
+    let inFlight = 0;
     function onMessage(e: MessageEvent) {
-      if (e.source !== iframeRef.current?.contentWindow) return;
-      const data = e.data as { type?: unknown; request?: unknown; context?: unknown } | null;
+      const frame = iframeRef.current?.contentWindow;
+      if (!frame || e.source !== frame) return;
+      const data = e.data as {
+        type?: unknown;
+        request?: unknown;
+        context?: unknown;
+        id?: unknown;
+        url?: unknown;
+        instruction?: unknown;
+      } | null;
+      if (data?.type === "genui:fetch" && typeof data.id === "number") {
+        const id = data.id;
+        const reply = (result: object) => frame.postMessage({ type: "genui:fetch:result", id, ...result }, "*");
+        if (inFlight >= MAX_FETCHES_IN_FLIGHT) {
+          reply({ error: "Too many data requests at once." });
+          return;
+        }
+        inFlight++;
+        extractData(data.url, data.instruction, remoteChoice(getSettings()))
+          .then(reply, () => reply({ error: "Couldn't reach the server." }))
+          .finally(() => inFlight--);
+        return;
+      }
       if (data?.type !== "genui:ask" || typeof data.request !== "string") return;
       sendRef.current(data.request.slice(0, 2000), { source: "panel", context: data.context });
     }
