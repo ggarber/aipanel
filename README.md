@@ -1,6 +1,9 @@
 # Voice UI
 
-A voice-driven generative UI. Press the talk button (bottom right), describe a screen, and Claude builds or edits it as HTML.
+A voice-driven generative UI. Use the edit button (bottom right) to describe a screen, and the model builds or edits it as HTML:
+
+- **Click** it to choose **Chat** (type the request) or **Voice** (speak it; click again to stop).
+- **Hold** it to talk right away (push-to-talk); release to send.
 
 ## Run
 

@@ -40,7 +40,7 @@ Rules for the HTML:
   access to your server, no cookies, no localStorage guarantee, and no parent-page access.
 - External resources only from https://cdn.jsdelivr.net or https://unpkg.com if truly needed.
 - Make it look polished and modern, responsive, and readable. Keep the bottom-right corner
-  (about 96x96px) free of important content — a floating talk button sits there.
+  (about 96x96px) free of important content — a floating edit button sits there.
 - Transcripts come from speech recognition and may have errors; infer the intent.
 
 Interactivity — pick the cheapest mechanism that works:
