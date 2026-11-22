@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
+import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
 import { resetUI, submitRequest, type RequestOrigin } from "./actions";
 
 // Minimal Web Speech API typings (not in lib.dom for all TS versions).
@@ -55,6 +55,9 @@ function withBridge(html: string): string {
 
 type Status = "idle" | "listening" | "thinking";
 
+// Holding the main button this long starts push-to-talk instead of opening the menu.
+const HOLD_MS = 300;
+
 export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   const [html, setHtml] = useState(initialHtml);
   const [listening, setListening] = useState(false);
@@ -63,6 +66,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   const [error, setError] = useState("");
   const [typed, setTyped] = useState("");
   const [textOpen, setTextOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   // true on the server so the button doesn't flash a disabled state before hydration.
   const supported = useSyncExternalStore(
     noopSubscribe,
@@ -78,12 +82,39 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // Guards against overlapping requests, e.g. a generated page calling askLLM repeatedly.
   const busyRef = useRef(false);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdingRef = useRef(false);
+  const skipClickRef = useRef(false);
+  const controlsRef = useRef<HTMLDivElement>(null);
 
   const status: Status = isPending ? "thinking" : listening ? "listening" : "idle";
 
   useEffect(() => {
-    return () => recognitionRef.current?.abort();
+    return () => {
+      recognitionRef.current?.abort();
+      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuOpen(false);
+    function onPointerDown(e: PointerEvent) {
+      if (!controlsRef.current?.contains(e.target as Node)) close();
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") close();
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    // Clicking into the iframe doesn't reach this document, but it does blur the window.
+    window.addEventListener("blur", close);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", close);
+    };
+  }, [menuOpen]);
 
   function send(text: string, origin: RequestOrigin = { source: "voice" }) {
     const trimmed = text.trim();
@@ -121,12 +152,13 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  function startListening() {
+  // continuous keeps listening through pauses, for push-to-talk where release ends it.
+  function startListening(continuous = false) {
     const Ctor = getRecognitionCtor();
     if (!Ctor) return;
     const recognition = new Ctor();
     recognition.lang = navigator.language || "en-US";
-    recognition.continuous = false;
+    recognition.continuous = continuous;
     recognition.interimResults = true;
     finalRef.current = "";
 
@@ -158,10 +190,52 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
     recognition.start();
   }
 
-  function toggleTalk() {
+  function clearHoldTimer() {
+    if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+    holdTimerRef.current = null;
+  }
+
+  function onMainPointerDown(e: ReactPointerEvent<HTMLButtonElement>) {
+    skipClickRef.current = false;
+    if (e.button !== 0 || isPending || listening || !supported) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    clearHoldTimer();
+    holdTimerRef.current = setTimeout(() => {
+      holdTimerRef.current = null;
+      holdingRef.current = true;
+      setMenuOpen(false);
+      startListening(true);
+    }, HOLD_MS);
+  }
+
+  function onMainPointerUp() {
+    clearHoldTimer();
+    if (!holdingRef.current) return;
+    holdingRef.current = false;
+    skipClickRef.current = true;
+    recognitionRef.current?.stop();
+  }
+
+  function onMainClick() {
+    if (skipClickRef.current) {
+      skipClickRef.current = false;
+      return;
+    }
     if (isPending) return;
     if (listening) recognitionRef.current?.stop();
-    else startListening();
+    else if (!supported) setTextOpen(true);
+    else setMenuOpen((open) => !open);
+  }
+
+  function chooseChat() {
+    setMenuOpen(false);
+    setTextOpen(true);
+  }
+
+  function chooseVoice() {
+    setMenuOpen(false);
+    setTextOpen(false);
+    startListening();
   }
 
   function reset() {
@@ -183,7 +257,7 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
         className={`h-full w-full border-0 transition-opacity ${isPending ? "opacity-60" : ""}`}
       />
 
-      <div className="pointer-events-none fixed bottom-6 right-6 flex flex-col items-end gap-3">
+      <div ref={controlsRef} className="pointer-events-none fixed bottom-6 right-6 flex flex-col items-end gap-3">
         {(transcript || message || error) && (
           <div className="pointer-events-auto max-w-sm rounded-2xl bg-zinc-900/90 px-4 py-3 text-sm text-zinc-100 shadow-xl backdrop-blur">
             {transcript && (
@@ -228,6 +302,28 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           </form>
         )}
 
+        {menuOpen && (
+          <div
+            role="menu"
+            aria-label="Edit with"
+            className="pointer-events-auto flex flex-col overflow-hidden rounded-2xl bg-white text-sm text-zinc-800 shadow-xl ring-1 ring-zinc-200"
+          >
+            <button role="menuitem" onClick={chooseChat} className="flex items-center gap-3 px-4 py-2.5 text-left hover:bg-zinc-100">
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              Chat
+            </button>
+            <button role="menuitem" onClick={chooseVoice} className="flex items-center gap-3 px-4 py-2.5 text-left hover:bg-zinc-100">
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="2" width="6" height="12" rx="3" />
+                <path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8" />
+              </svg>
+              Voice
+            </button>
+          </div>
+        )}
+
         <div className="pointer-events-auto flex items-center gap-2">
           <button
             onClick={reset}
@@ -236,35 +332,32 @@ export default function GenerativeUI({ initialHtml }: { initialHtml: string }) {
           >
             Reset
           </button>
-          {supported && (
-            <button
-              onClick={() => setTextOpen((open) => !open)}
-              aria-label={textOpen ? "Hide text input" : "Type instead"}
-              aria-pressed={textOpen}
-              className={`flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition
-                ${textOpen ? "bg-zinc-900 text-white hover:bg-zinc-700" : "bg-white text-zinc-700 hover:bg-zinc-100"}`}
-            >
-              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="6" width="20" height="12" rx="2" />
-                <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
-              </svg>
-            </button>
-          )}
           <button
-            onClick={toggleTalk}
-            disabled={!supported || isPending}
-            aria-label={listening ? "Stop listening" : "Talk"}
-            className={`relative flex h-16 w-16 items-center justify-center rounded-full text-white shadow-2xl transition
+            onClick={onMainClick}
+            onPointerDown={onMainPointerDown}
+            onPointerUp={onMainPointerUp}
+            onPointerCancel={onMainPointerUp}
+            onContextMenu={(e) => e.preventDefault()}
+            disabled={isPending}
+            aria-label={listening ? "Stop listening" : "Edit (hold to talk)"}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            className={`relative flex h-16 w-16 touch-none select-none items-center justify-center rounded-full text-white shadow-2xl transition [-webkit-touch-callout:none]
               ${listening ? "bg-red-500 hover:bg-red-600" : "bg-zinc-900 hover:bg-zinc-700"}
               disabled:cursor-not-allowed disabled:opacity-60`}
           >
             {listening && <span className="absolute inset-0 animate-ping rounded-full bg-red-500/50" />}
             {status === "thinking" ? (
               <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-            ) : (
+            ) : listening ? (
               <svg viewBox="0 0 24 24" className="relative h-7 w-7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="9" y="2" width="6" height="12" rx="3" />
                 <path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" className="relative h-7 w-7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
               </svg>
             )}
           </button>

@@ -15,7 +15,7 @@ export const INITIAL_HTML = `<!doctype html>
 <body>
   <div class="hint">
     <h1>Say what you want to see</h1>
-    <p>Press the talk button in the bottom right and describe a UI.
+    <p>Click the edit button in the bottom right (or hold it to talk) and describe a UI.
        Try “a todo list for a camping trip” or “a dashboard with three KPI cards”.</p>
   </div>
 </body>
