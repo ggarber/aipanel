@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { panelFileName, parsePanelFile, toPanelFile, type PanelData } from "@/lib/panel-file";
-import type { StoredPanel } from "@/lib/panel-store";
+import { panelTitle, revertPanel, type StoredPanel } from "@/lib/panel-store";
 import { localAvailability } from "@/lib/local-model";
 import {
   PROVIDER_IDS,
@@ -26,11 +26,13 @@ export default function SettingsDialog({
   onClose,
   panel,
   onImported,
+  onReverted,
 }: {
   settings: ModelSettings;
   onClose: () => void;
   panel: StoredPanel | null;
   onImported: (data: PanelData) => void;
+  onReverted: (version: number) => void;
 }) {
   const [draft, setDraft] = useState(settings);
   const provider = isProviderId(draft.source) ? draft.source : null;
@@ -84,6 +86,17 @@ export default function SettingsDialog({
     }
   }
 
+  function revert(version: number) {
+    if (!panel) return;
+    try {
+      revertPanel(panel.code, version);
+      onReverted(version);
+      onClose();
+    } catch (err) {
+      setPanelStatus({ text: (err as Error).message, error: true });
+    }
+  }
+
   function save(e: React.FormEvent) {
     e.preventDefault();
     saveSettings(draft);
@@ -101,7 +114,7 @@ export default function SettingsDialog({
         aria-labelledby="settings-title"
         onSubmit={save}
         onKeyDown={(e) => e.key === "Escape" && onClose()}
-        className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 text-sm text-zinc-800 shadow-2xl"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-md space-y-4 overflow-y-auto rounded-2xl bg-white p-6 text-sm text-zinc-800 shadow-2xl"
       >
         <h2 id="settings-title" className="text-lg font-semibold text-zinc-900">Settings</h2>
 
@@ -161,6 +174,48 @@ export default function SettingsDialog({
               />
             </label>
           </div>
+        )}
+
+        {panel && (
+          <section className="space-y-2 border-t border-zinc-200 pt-4">
+            <h3 className="font-medium">Versions</h3>
+            <ol className="max-h-56 space-y-1 overflow-y-auto">
+              {[
+                { version: panel.version, html: panel.html, note: panel.note, savedAt: panel.updatedAt, current: true },
+                ...panel.history.map((v) => ({ ...v, current: false })),
+              ].map((v) => (
+                <li key={v.version} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-zinc-50">
+                  <span className="w-9 shrink-0 font-mono text-xs font-semibold text-zinc-500">v{v.version}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate" title={v.note}>
+                      {v.note || "—"}
+                      <span className="text-zinc-500"> · {panelTitle(v.html)}</span>
+                    </span>
+                    <time dateTime={v.savedAt} className="block text-xs text-zinc-500">
+                      {new Date(v.savedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}
+                    </time>
+                  </span>
+                  {v.current ? (
+                    <span className="shrink-0 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                      Current
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => revert(v.version)}
+                      className="shrink-0 rounded-full border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100"
+                    >
+                      Revert
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ol>
+            <p className="text-xs text-zinc-500">
+              The last 5 versions before the current one are kept in this browser. Reverting saves the old page as a new
+              version, so you can undo it.
+            </p>
+          </section>
         )}
 
         <section className="space-y-2 border-t border-zinc-200 pt-4">
