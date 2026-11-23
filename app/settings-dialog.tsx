@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { panelFileName, parsePanelFile, toPanelFile, type PanelData } from "@/lib/panel-file";
-import { panelTitle, revertPanel, type StoredPanel } from "@/lib/panel-store";
+import { panelTitle, type StoredPanel } from "@/lib/panel-store";
 import { localAvailability } from "@/lib/local-model";
 import {
   PROVIDER_IDS,
@@ -25,14 +25,14 @@ export default function SettingsDialog({
   settings,
   onClose,
   panel,
-  onImported,
-  onReverted,
+  onImport,
+  onRevert,
 }: {
   settings: ModelSettings;
   onClose: () => void;
   panel: StoredPanel | null;
-  onImported: (data: PanelData) => void;
-  onReverted: (version: number) => void;
+  onImport: (data: PanelData) => Promise<boolean>;
+  onRevert: (version: number) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState(settings);
   const provider = isProviderId(draft.source) ? draft.source : null;
@@ -76,8 +76,8 @@ export default function SettingsDialog({
     try {
       const data = parsePanelFile(await file.text());
       if (!data.html.trim()) throw new Error("The file has no page in it.");
-      onImported(data);
-      onClose();
+      if (await onImport(data)) onClose();
+      else throw new Error("Import failed.");
     } catch (err) {
       setPanelStatus({ text: err instanceof Error ? err.message : "Import failed.", error: true });
     } finally {
@@ -86,15 +86,12 @@ export default function SettingsDialog({
     }
   }
 
-  function revert(version: number) {
-    if (!panel) return;
-    try {
-      revertPanel(panel.code, version);
-      onReverted(version);
-      onClose();
-    } catch (err) {
-      setPanelStatus({ text: (err as Error).message, error: true });
-    }
+  async function revert(version: number) {
+    setPanelBusy(true);
+    const ok = await onRevert(version);
+    setPanelBusy(false);
+    if (ok) onClose();
+    else setPanelStatus({ text: `Couldn't revert to v${version}.`, error: true });
   }
 
   function save(e: React.FormEvent) {
@@ -203,6 +200,7 @@ export default function SettingsDialog({
                     <button
                       type="button"
                       onClick={() => revert(v.version)}
+                      disabled={panelBusy}
                       className="shrink-0 rounded-full border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100"
                     >
                       Revert

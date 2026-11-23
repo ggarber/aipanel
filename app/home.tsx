@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState, useSyncExternalStore } from "react";
-import { CODE_LENGTH, isPanelCode, normalizeCode } from "@/lib/panel-code";
+import { createPanel, openPanel, type PanelResult } from "./actions";
+import { CODE_LENGTH, generateCode, isPanelCode, normalizeCode } from "@/lib/panel-code";
 import {
-  createPanel,
-  deletePanel,
-  getPanel,
+  cachePanel,
+  forgetPanel,
   listPanels,
   panelTitle,
   subscribePanels,
@@ -40,26 +40,39 @@ export default function Home() {
   const [focused, setFocused] = useState(true);
   const [error, setError] = useState("");
   const [shake, setShake] = useState(0);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [missing, setMissing] = useState(false);
+  const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  function open(e?: React.FormEvent) {
-    e?.preventDefault();
-    if (!isPanelCode(code)) return;
-    if (!getPanel(code)) {
-      setError(`No panel ${code} in this browser`);
-      setShake((n) => n + 1);
-      return;
-    }
-    router.push(`/p/${code}`);
+  function fail(text: string) {
+    setError(text);
+    setShake((n) => n + 1);
   }
 
-  function create() {
-    try {
-      router.push(`/p/${createPanel().code}`);
-    } catch (err) {
-      setError((err as Error).message);
+  async function open(e?: React.FormEvent) {
+    e?.preventDefault();
+    if (!isPanelCode(code) || busy) return;
+    setBusy(true);
+    const result = await openPanel(code).catch(() => ({ error: "Couldn't reach the server." }));
+    setBusy(false);
+    if ("error" in result) return fail(result.error);
+    if (result.status === "found") {
+      cachePanel(result.panel);
+      router.push(`/p/${code}`);
+    } else {
+      setMissing(true);
+      fail(`No panel ${code} yet. Create it?`);
     }
+  }
+
+  async function create() {
+    if (!isPanelCode(code) || busy) return;
+    setBusy(true);
+    const result: PanelResult = await createPanel(code).catch(() => ({ error: "Couldn’t reach the server." }));
+    setBusy(false);
+    if (result.error || !result.panel) return fail(result.error ?? "Couldn't create the panel.");
+    cachePanel(result.panel);
+    router.push(`/p/${code}`);
   }
 
   return (
@@ -96,6 +109,7 @@ export default function Home() {
               onChange={(e) => {
                 setCode(normalizeCode(e.target.value));
                 setError("");
+                setMissing(false);
               }}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
@@ -112,22 +126,41 @@ export default function Home() {
             {error ? (
               <span className="rounded-lg bg-red-600/90 px-3 py-1 text-white">{error}</span>
             ) : (
-              <span className="text-sky-100">8 letters or numbers</span>
+              <span className="text-sky-100">8 letters or numbers: open a panel, or pick a new code</span>
             )}
           </p>
           <div className="mt-5 flex flex-wrap justify-center gap-4">
-            <button type="submit" disabled={!isPanelCode(code)} className="game-btn game-btn-gold min-w-36">
+            <button type="submit" disabled={!isPanelCode(code) || busy} className="game-btn game-btn-gold min-w-32">
               OPEN
             </button>
-            <button type="button" onClick={create} className="game-btn game-btn-green min-w-36">
-              + NEW PANEL
+            <button
+              type="button"
+              onClick={create}
+              disabled={!isPanelCode(code) || busy}
+              className={`game-btn game-btn-green min-w-32 ${missing ? "game-pop" : ""}`}
+            >
+              + CREATE
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCode(generateCode());
+                setError("");
+                setMissing(false);
+                inputRef.current?.focus();
+              }}
+              aria-label="Suggest a random code"
+              title="Suggest a random code"
+              className="game-btn game-btn-blue"
+            >
+              🎲
             </button>
           </div>
         </form>
 
         {panels.length > 0 && (
           <section className="w-full">
-            <h2 className="game-outline mb-4 text-center text-2xl">Your panels</h2>
+            <h2 className="game-outline mb-4 text-center text-2xl">Recent panels</h2>
             <ul className="grid gap-4 sm:grid-cols-2">
               {panels.map((p) => (
                 <li key={p.code} className="game-card flex items-center gap-3 p-4">
@@ -139,34 +172,20 @@ export default function Home() {
                     <span className="mt-1 block truncate font-semibold text-white">{panelTitle(p.html)}</span>
                     <span className="block text-xs text-sky-200">Updated {ago(p.updatedAt)}</span>
                   </Link>
-                  {confirmDelete === p.code ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        deletePanel(p.code);
-                        setConfirmDelete(null);
-                      }}
-                      onBlur={() => setConfirmDelete(null)}
-                      autoFocus
-                      className="game-btn game-btn-red game-btn-sm"
-                    >
-                      Delete?
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDelete(p.code)}
-                      aria-label={`Delete panel ${p.code}`}
-                      className="game-btn game-btn-blue game-btn-sm"
-                    >
-                      ✕
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => forgetPanel(p.code)}
+                    aria-label={`Remove ${p.code} from this list`}
+                    title="Remove from this list (the panel stays on the server)"
+                    className="game-btn game-btn-blue game-btn-sm"
+                  >
+                    ✕
+                  </button>
                 </li>
               ))}
             </ul>
             <p className="mt-4 text-center text-xs text-sky-200">
-              Panels are saved in this browser only. Use Export / Import in a panel’s Settings to move one.
+              Panels you opened in this browser. They’re saved on the server: open them anywhere with their code.
             </p>
           </section>
         )}

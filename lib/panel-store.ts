@@ -1,43 +1,15 @@
-// Panels live only in this browser's localStorage, one key per code. Each save bumps the
-// version; views only take a stored copy that is newer than what they show.
+// Browser cache of panels from the server, one localStorage key per code. A cached copy is
+// only replaced by a newer version, and views render from here, so a panel shows at once
+// and then updates when the server has something newer.
 
-import { INITIAL_HTML } from "./initial-html";
-import { generateCode, isPanelCode } from "./panel-code";
-import { MAX_PANEL_REQUESTS } from "./panel-file";
+import type { PanelRecord } from "./panel-types";
 
-// A saved state of the page. note says what made it ("a todo list", "Reset", "Imported"…).
-export type PanelVersion = {
-  version: number;
-  html: string;
-  requests: string[];
-  note: string;
-  savedAt: string;
-};
-
-export type StoredPanel = {
-  code: string;
-  version: number;
-  html: string;
-  requests: string[];
-  note: string;
-  createdAt: string;
-  updatedAt: string;
-  // The previous versions, newest first, at most MAX_HISTORY.
-  history: PanelVersion[];
-};
-
-export const MAX_HISTORY = 5;
-
-// A short name for a page: its <title>, else its first <h1>.
-export function panelTitle(html: string): string {
-  const match = /<title[^>]*>([^<]{1,80})<\/title>/i.exec(html) ?? /<h1[^>]*>([\s\S]{1,200}?)<\/h1>/i.exec(html);
-  const text = match?.[1].replace(/<[^>]+>/g, "").trim();
-  return text || "Untitled panel";
-}
+export type { PanelRecord as StoredPanel } from "./panel-types";
+export { panelTitle } from "./panel-types";
 
 const PREFIX = "aipanel:panel:";
 const listeners = new Set<() => void>();
-const snapshots = new Map<string, { raw: string | null; panel: StoredPanel | null }>();
+const snapshots = new Map<string, { raw: string | null; panel: PanelRecord | null }>();
 
 function read(key: string): string | null {
   try {
@@ -47,10 +19,10 @@ function read(key: string): string | null {
   }
 }
 
-function parse(raw: string | null): StoredPanel | null {
+function parse(raw: string | null): PanelRecord | null {
   if (!raw) return null;
   try {
-    const p = JSON.parse(raw) as StoredPanel;
+    const p = JSON.parse(raw) as PanelRecord;
     if (typeof p.html !== "string" || typeof p.version !== "number") return null;
     return { ...p, requests: p.requests ?? [], note: p.note ?? "", history: Array.isArray(p.history) ? p.history : [] };
   } catch {
@@ -59,7 +31,7 @@ function parse(raw: string | null): StoredPanel | null {
 }
 
 // Stable object per stored string, as useSyncExternalStore needs.
-export function getPanel(code: string): StoredPanel | null {
+export function getPanel(code: string): PanelRecord | null {
   const raw = read(PREFIX + code);
   const cached = snapshots.get(code);
   if (cached && cached.raw === raw) return cached.panel;
@@ -68,8 +40,8 @@ export function getPanel(code: string): StoredPanel | null {
   return panel;
 }
 
-export function listPanels(): StoredPanel[] {
-  const panels: StoredPanel[] = [];
+export function listPanels(): PanelRecord[] {
+  const panels: PanelRecord[] = [];
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -81,62 +53,31 @@ export function listPanels(): StoredPanel[] {
   return panels.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-// When storage is full, drops the oldest saved versions before giving up.
-function write(panel: StoredPanel) {
-  for (let keep = panel.history.length; ; keep--) {
-    try {
-      localStorage.setItem(PREFIX + panel.code, JSON.stringify({ ...panel, history: panel.history.slice(0, keep) }));
-      break;
-    } catch {
-      if (keep === 0) throw new Error("This browser's storage is full. Delete or export some panels.");
-    }
-  }
+function notify() {
   listeners.forEach((l) => l());
 }
 
-// Saves new content as the next version, after whatever is stored (another tab may
-// have saved in the meantime).
-export function savePanel(code: string, data: { html: string; requests: string[] }, note: string): StoredPanel {
-  const current = getPanel(code);
-  const now = new Date().toISOString();
-  const previous: PanelVersion[] = current
-    ? [
-        { version: current.version, html: current.html, requests: current.requests, note: current.note, savedAt: current.updatedAt },
-        ...current.history,
-      ].slice(0, MAX_HISTORY)
-    : [];
-  const panel: StoredPanel = {
-    code,
-    version: (current?.version ?? 0) + 1,
-    html: data.html,
-    requests: data.requests.slice(-MAX_PANEL_REQUESTS),
-    note: note.slice(0, 200),
-    createdAt: current?.createdAt ?? now,
-    updatedAt: now,
-    history: previous,
-  };
-  write(panel);
-  return panel;
+// Stores a server copy unless the cache already has this version or a newer one. Returns
+// whether it was stored. If storage is full, older versions are dropped from the cached copy.
+export function cachePanel(panel: PanelRecord): boolean {
+  const current = getPanel(panel.code);
+  if (current && current.id === panel.id && current.version >= panel.version) return false;
+  for (let keep = panel.history.length; keep >= 0; keep--) {
+    try {
+      localStorage.setItem(PREFIX + panel.code, JSON.stringify({ ...panel, history: panel.history.slice(0, keep) }));
+      notify();
+      return true;
+    } catch {}
+  }
+  return false;
 }
 
-export function createPanel(): StoredPanel {
-  let code = generateCode();
-  while (getPanel(code)) code = generateCode();
-  return savePanel(code, { html: INITIAL_HTML, requests: [] }, "Created");
-}
-
-// Brings back an older page as a new version, so the page being replaced stays in history.
-export function revertPanel(code: string, version: number): StoredPanel {
-  const target = getPanel(code)?.history.find((v) => v.version === version);
-  if (!target) throw new Error(`Version ${version} is no longer saved.`);
-  return savePanel(code, { html: target.html, requests: target.requests }, `Reverted to v${version}`);
-}
-
-export function deletePanel(code: string) {
+// Removes the cached copy only; the panel stays on the server.
+export function forgetPanel(code: string) {
   try {
     localStorage.removeItem(PREFIX + code);
   } catch {}
-  listeners.forEach((l) => l());
+  notify();
 }
 
 export function subscribePanels(listener: () => void) {
@@ -148,5 +89,3 @@ export function subscribePanels(listener: () => void) {
     window.removeEventListener("storage", onStorage);
   };
 }
-
-export { isPanelCode };
