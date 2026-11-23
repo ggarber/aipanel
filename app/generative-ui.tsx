@@ -2,9 +2,9 @@
 
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
 import Link from "next/link";
-import { extractData, submitRequest, type RequestOrigin } from "./actions";
+import { extractData, revertPanel, savePanelContent, submitRequest, type PanelResult, type RequestOrigin } from "./actions";
 import { INITIAL_HTML } from "@/lib/initial-html";
-import { getPanel, savePanel, subscribePanels } from "@/lib/panel-store";
+import { cachePanel, getPanel, subscribePanels } from "@/lib/panel-store";
 import { historyEntry } from "@/lib/genui";
 import { runLocalModel } from "@/lib/local-model";
 import {
@@ -103,7 +103,7 @@ type Status = "idle" | "listening" | "thinking";
 // Holding the main button this long starts push-to-talk instead of opening the menu.
 const HOLD_MS = 300;
 
-export default function GenerativeUI({ code }: { code: string }) {
+export default function GenerativeUI({ code, offline = false }: { code: string; offline?: boolean }) {
   // The page shown is always the newest stored version of this panel, so saves from this
   // tab or another one show up here, and an older copy never replaces a newer one.
   const panel = useSyncExternalStore(subscribePanels, () => getPanel(code), () => null);
@@ -126,7 +126,7 @@ export default function GenerativeUI({ code }: { code: string }) {
     () => true,
   );
   const [isPending, startTransition] = useTransition();
-  const { activities, last, begin, update, end, note } = useActivities();
+  const { activities, last, begin, update, end } = useActivities();
 
   const [requestSource, setRequestSource] = useState<RequestOrigin["source"]>("voice");
 
@@ -184,19 +184,14 @@ export default function GenerativeUI({ code }: { code: string }) {
     const started = Date.now();
     startTransition(async () => {
       try {
-        const doc = getPanel(code) ?? { html: INITIAL_HTML, requests: [] };
-        const result =
+        const result: PanelResult =
           current.source === "local"
-            ? await runLocal(trimmed, origin, activity, doc)
-            : await submitRequest(trimmed, origin, remoteChoice(current), { html: doc.html, requests: doc.requests });
-        if (!result.error && result.requests) {
-          try {
-            savePanel(code, { html: result.html, requests: result.requests }, historyEntry(trimmed, origin));
-          } catch (err) {
-            result.error = (err as Error).message;
-          }
-        }
-        setMessage(result.message);
+            ? await runLocal(trimmed, origin, activity)
+            : await submitRequest(trimmed, origin, remoteChoice(current), code).catch(() => ({
+                error: "Couldn't reach the server.",
+              }));
+        if (result.panel) cachePanel(result.panel);
+        setMessage(result.message ?? "");
         if (result.error) setError(result.error);
         end(
           activity,
@@ -211,12 +206,9 @@ export default function GenerativeUI({ code }: { code: string }) {
     });
   }
 
-  async function runLocal(
-    text: string,
-    origin: RequestOrigin,
-    activity: number,
-    doc: { html: string; requests: string[] },
-  ): Promise<{ html: string; message: string; requests?: string[]; error?: string }> {
+  // Gemini Nano makes the page here; the server stores it as the next version.
+  async function runLocal(text: string, origin: RequestOrigin, activity: number): Promise<PanelResult> {
+    const doc = getPanel(code) ?? { html: INITIAL_HTML, requests: [] };
     const onProgress = (fraction: number) => {
       setDownload(fraction);
       update(
@@ -228,9 +220,11 @@ export default function GenerativeUI({ code }: { code: string }) {
     };
     try {
       const result = await runLocalModel({ ...doc, fresh: doc.html === INITIAL_HTML }, text, origin, onProgress);
-      return { ...result, requests: [...doc.requests, historyEntry(text, origin)] };
+      const entry = historyEntry(text, origin);
+      const saved = await savePanelContent(code, { html: result.html, requests: [...doc.requests, entry] }, entry);
+      return { ...saved, message: result.message };
     } catch (err) {
-      return { html: "", message: "", error: err instanceof Error ? err.message : "The built-in model failed." };
+      return { error: err instanceof Error ? err.message : "The built-in model failed." };
     }
   }
 
@@ -391,16 +385,29 @@ export default function GenerativeUI({ code }: { code: string }) {
     startListening();
   }
 
-  function reset() {
-    try {
-      savePanel(code, { html: INITIAL_HTML, requests: [] }, "Reset");
-      setTranscript("");
-      setMessage("");
-      setError("");
-      note("Panel reset");
-    } catch (err) {
-      note((err as Error).message, true);
+  // Reset, Import and Revert: the server saves a new version, and the cache takes it.
+  async function saveOnServer(label: string, run: () => Promise<PanelResult>, done: string): Promise<boolean> {
+    const activity = begin(`${label}…`);
+    const result = await run().catch(() => ({ error: "Couldn't reach the server." }) as PanelResult);
+    if (result.panel) cachePanel(result.panel);
+    if (result.error) {
+      end(activity, { text: result.error, error: true });
+      setError(result.error);
+      return false;
     }
+    setTranscript("");
+    setError("");
+    setMessage("");
+    end(activity, { text: done });
+    return true;
+  }
+
+  function reset() {
+    void saveOnServer(
+      "Resetting the panel",
+      () => savePanelContent(code, { html: INITIAL_HTML, requests: [] }, "Reset"),
+      "Panel reset",
+    );
   }
 
   return (
@@ -542,8 +549,13 @@ export default function GenerativeUI({ code }: { code: string }) {
         last={last}
         model={describeModel(settings)}
         panel={
-          <Link href="/" title="Back to your panels" className="font-mono text-amber-300 hover:text-amber-200">
+          <Link
+            href="/"
+            title={offline ? "Server unreachable: showing the copy cached in this browser" : "Back to your panels"}
+            className="font-mono text-amber-300 hover:text-amber-200"
+          >
             {code} · v{panel?.version ?? 0}
+            {offline && <span className="text-red-300"> · offline (cached)</span>}
           </Link>
         }
       />
@@ -553,19 +565,12 @@ export default function GenerativeUI({ code }: { code: string }) {
           settings={settings}
           onClose={() => setSettingsOpen(false)}
           panel={panel}
-          onImported={(imported) => {
-            savePanel(code, imported, "Imported");
-            setTranscript("");
-            setError("");
-            setMessage("Imported the panel.");
-            note("Panel imported");
-          }}
-          onReverted={(version) => {
-            setTranscript("");
-            setError("");
-            setMessage(`Reverted to v${version}.`);
-            note(`Reverted to v${version}`);
-          }}
+          onImport={(imported) =>
+            saveOnServer("Importing the panel", () => savePanelContent(code, imported, "Imported"), "Panel imported")
+          }
+          onRevert={(version) =>
+            saveOnServer(`Reverting to v${version}`, () => revertPanel(code, version), `Reverted to v${version}`)
+          }
         />
       )}
     </div>

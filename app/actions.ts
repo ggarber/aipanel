@@ -15,9 +15,13 @@ import {
 } from "@/lib/genui";
 import { extractFromPage } from "@/lib/extract";
 import { parseModelChoice, resolveModel } from "@/lib/models";
+import { INITIAL_HTML } from "@/lib/initial-html";
+import { isPanelCode } from "@/lib/panel-code";
 import { MAX_PANEL_REQUESTS, MAX_REQUEST_CHARS, type PanelData } from "@/lib/panel-file";
+import type { PanelRecord } from "@/lib/panel-types";
+import * as panels from "@/lib/panels-db";
 
-// Identifies a browser for rate limiting only; panels are stored in the browser.
+// Identifies a browser for rate limiting only.
 const SESSION_COOKIE = "genui_session";
 
 async function sessionId(): Promise<string> {
@@ -30,7 +34,6 @@ async function sessionId(): Promise<string> {
   return id;
 }
 
-export type UIResult = { html: string; message: string; error?: string };
 
 // The panel as the browser holds it: validated here because server actions take untrusted input.
 function parsePanel(value: unknown): PanelData {
@@ -58,27 +61,91 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   redirect(/^\/p\/[A-Z0-9]{8}$/.test(next) ? next : "/");
 }
 
-// Runs the model on the panel the browser sends and returns the new page and history.
-// Nothing is stored here: the browser saves the result as the panel's next version.
+export type PanelResult = { panel?: PanelRecord; message?: string; error?: string };
+
+async function guard(code: unknown): Promise<string> {
+  if (!(await isAuthenticated())) throw new Error("Not signed in. Reload the page.");
+  if (typeof code !== "string" || !isPanelCode(code)) throw new Error("Panel codes are 8 letters or numbers.");
+  return code;
+}
+
+function failure(err: unknown): PanelResult {
+  return { error: err instanceof Error ? err.message : "Something went wrong." };
+}
+
+// knownVersion: the version the browser has cached; the panel is only sent back when the
+// server's is newer.
+export async function openPanel(
+  code: unknown,
+  knownVersion?: number,
+): Promise<{ status: "found"; panel: PanelRecord } | { status: "current" } | { status: "missing" } | { error: string }> {
+  try {
+    const panel = await panels.findPanel(await guard(code));
+    if (!panel) return { status: "missing" };
+    if (typeof knownVersion === "number" && panel.version <= knownVersion) return { status: "current" };
+    return { status: "found", panel };
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+}
+
+// Claims a code for a new panel. content uploads a page that so far only exists in this
+// browser (panels made before the database existed).
+export async function createPanel(code: unknown, content?: unknown): Promise<PanelResult> {
+  try {
+    const c = await guard(code);
+    const doc = content === undefined ? { html: INITIAL_HTML, requests: [] } : parsePanel(content);
+    const panel = await panels.createPanel(c, doc.html, content === undefined ? "Created" : "Uploaded from this browser");
+    if (!panel) return { error: `The code ${c} is already taken.` };
+    if (doc.requests.length) return { panel: await panels.savePanel(c, doc, "Uploaded from this browser") };
+    return { panel };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+// Saves a page made in the browser (local model, Import, Reset) as the next version.
+export async function savePanelContent(code: unknown, content: unknown, note: unknown): Promise<PanelResult> {
+  try {
+    const c = await guard(code);
+    return { panel: await panels.savePanel(c, parsePanel(content), typeof note === "string" ? note : "") };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+// Brings back an older version as a new version, so the replaced page stays in history.
+export async function revertPanel(code: unknown, version: unknown): Promise<PanelResult> {
+  try {
+    const c = await guard(code);
+    const target = (await panels.findPanel(c))?.history.find((v) => v.version === version);
+    if (!target) return { error: `Version ${version} is no longer saved.` };
+    return { panel: await panels.savePanel(c, target, `Reverted to v${target.version}`) };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+// Runs the model on the stored panel and saves the result as the next version.
 export async function submitRequest(
   transcript: string,
   origin: RequestOrigin,
   modelChoice: unknown,
-  panel: unknown,
-): Promise<UIResult & { requests?: string[] }> {
-  if (!(await isAuthenticated())) {
-    return { html: "", message: "", error: "Not signed in. Reload the page." };
-  }
-  let doc: PanelData;
+  code: unknown,
+): Promise<PanelResult> {
+  let c: string;
   try {
-    doc = parsePanel(panel);
+    c = await guard(code);
   } catch (err) {
-    return { html: "", message: "", error: (err as Error).message };
+    return failure(err);
   }
-  const text = transcript.trim().slice(0, 4000);
-  if (!text) return { html: doc.html, message: "" };
+  const text = typeof transcript === "string" ? transcript.trim().slice(0, 4000) : "";
+  const current = await panels.findPanel(c);
+  if (!current) return { error: `Panel ${c} doesn't exist.` };
+  if (!text) return { panel: current };
 
   try {
+    const doc = { html: current.html, requests: current.requests };
     // The user's own key (if any) is used for this call only; it is never stored or logged.
     const { model, providerOptions } = resolveModel(parseModelChoice(modelChoice));
     const result = await generateText({
@@ -90,11 +157,16 @@ export async function submitRequest(
       maxOutputTokens: 32000,
       providerOptions,
     });
-    const requests = [...doc.requests, historyEntry(text, origin)].slice(-MAX_PANEL_REQUESTS);
-    return { html: doc.html, message: result.text, requests };
+    const entry = historyEntry(text, origin);
+    const requests = [...doc.requests, entry].slice(-MAX_PANEL_REQUESTS);
+    // No change to the page (the model only answered): no new version.
+    if (doc.html === current.html) {
+      return { panel: current, message: result.text };
+    }
+    return { panel: await panels.savePanel(c, { html: doc.html, requests }, entry), message: result.text };
   } catch (err) {
     console.error("submitRequest failed:", err instanceof Error ? err.message : err);
-    return { html: "", message: "", error: err instanceof Error ? err.message : "Something went wrong." };
+    return failure(err);
   }
 }
 
