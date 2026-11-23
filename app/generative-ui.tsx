@@ -191,7 +191,7 @@ export default function GenerativeUI({ code }: { code: string }) {
             : await submitRequest(trimmed, origin, remoteChoice(current), { html: doc.html, requests: doc.requests });
         if (!result.error && result.requests) {
           try {
-            savePanel(code, { html: result.html, requests: result.requests });
+            savePanel(code, { html: result.html, requests: result.requests }, historyEntry(trimmed, origin));
           } catch (err) {
             result.error = (err as Error).message;
           }
@@ -393,7 +393,7 @@ export default function GenerativeUI({ code }: { code: string }) {
 
   function reset() {
     try {
-      savePanel(code, { html: INITIAL_HTML, requests: [] });
+      savePanel(code, { html: INITIAL_HTML, requests: [] }, "Reset");
       setTranscript("");
       setMessage("");
       setError("");
@@ -554,11 +554,17 @@ export default function GenerativeUI({ code }: { code: string }) {
           onClose={() => setSettingsOpen(false)}
           panel={panel}
           onImported={(imported) => {
-            savePanel(code, imported);
+            savePanel(code, imported, "Imported");
             setTranscript("");
             setError("");
             setMessage("Imported the panel.");
             note("Panel imported");
+          }}
+          onReverted={(version) => {
+            setTranscript("");
+            setError("");
+            setMessage(`Reverted to v${version}.`);
+            note(`Reverted to v${version}`);
           }}
         />
       )}

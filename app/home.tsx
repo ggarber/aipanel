@@ -4,7 +4,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState, useSyncExternalStore } from "react";
 import { CODE_LENGTH, isPanelCode, normalizeCode } from "@/lib/panel-code";
-import { createPanel, deletePanel, getPanel, listPanels, subscribePanels, type StoredPanel } from "@/lib/panel-store";
+import {
+  createPanel,
+  deletePanel,
+  getPanel,
+  listPanels,
+  panelTitle,
+  subscribePanels,
+  type StoredPanel,
+} from "@/lib/panel-store";
 
 const EMPTY: StoredPanel[] = [];
 let cachedList: { key: string; list: StoredPanel[] } = { key: "", list: EMPTY };
@@ -15,12 +23,6 @@ function panelsSnapshot(): StoredPanel[] {
   const key = list.map((p) => `${p.code}:${p.version}`).join(",");
   if (key !== cachedList.key) cachedList = { key, list };
   return cachedList.list;
-}
-
-function panelTitle(html: string): string {
-  const match = /<title[^>]*>([^<]{1,80})<\/title>/i.exec(html) ?? /<h1[^>]*>([\s\S]{1,200}?)<\/h1>/i.exec(html);
-  const text = match?.[1].replace(/<[^>]+>/g, "").trim();
-  return text || "Untitled panel";
 }
 
 function ago(iso: string): string {
