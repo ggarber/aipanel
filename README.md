@@ -17,7 +17,8 @@ Open http://localhost:3000 in Chrome, Edge or Safari.
 ## Panels and codes
 
 - **A panel** has an `id`, generated and never changing, and a **code** you choose: 8 characters, `A–Z` and `0–9`.
-- **`/`** is the game-style home screen. Type a code, then press **OPEN** to open that panel, or **+ CREATE** to claim the code for a new panel. 🎲 suggests a random code. "Recent panels" lists the panels opened in this browser; ✕ removes one from the list, and the panel stays on the server.
+- **`/`** is the game-style home screen. Type a code and press **OPEN**. The server is asked whether that panel exists: if it does, it is downloaded and shown; if not, the panel opens empty and its **first change creates it** on the server. 🎲 suggests a random code. "Recent panels" lists the panels opened in this browser; ✕ removes one from the list, and the panel stays on the server.
+- **Every change is stored on the server**, whichever model made it: Gemini Nano in the browser, your own key (called from the browser), or the server's model.
 - **`/p/<CODE>`** opens a panel from any device. Lowercase codes redirect to uppercase, and invalid ones go home.
 - **Storage:** the server database (Neon Postgres, `lib/panels-db.ts`) is the source of truth for each panel and its last 5 versions. The browser keeps a cached copy (`lib/panel-store.ts`, `localStorage`) and shows it immediately, then asks the server and takes its copy only if the version is newer. If the server can't be reached, the cached copy stays on screen marked "offline (cached)".
 - **Versions:** every save on the server bumps `version`, records a `note` (the request, "Reset", "Imported", "Reverted to v3"…) and moves the previous version into `history`, keeping 5. Settings → Versions lists them with dates and offers **Revert**, which saves the old page as a new version so it can be undone.
@@ -32,6 +33,7 @@ The table is created on first use (`lib/panels-db.ts`):
 
 ```sql
 CREATE TABLE panels (
+  server_llm boolean NOT NULL DEFAULT false, -- may the server run its model for this panel?
   id uuid PRIMARY KEY,           -- generated
   code text NOT NULL UNIQUE,     -- chosen by the user
   version integer NOT NULL,
@@ -48,8 +50,8 @@ CREATE TABLE panels (
 
 The gear button opens Settings. The choice is saved in this browser.
 
-- **Server default:** Gemini (`gemini-3.8-flash`) with the server's `GOOGLE_GENERATIVE_AI_API_KEY`.
-- **Gemini / OpenAI / Anthropic with your own key:** the key and model name are stored in this browser's `localStorage` and sent with each request. The server uses them for that call only. It never stores or logs them (`logging.serverFunctions` is off in `next.config.ts`, since dev logs would print action arguments).
+- **Server:** Gemini (`gemini-3.8-flash`) with the server's `GOOGLE_GENERATIVE_AI_API_KEY`. It's only available for panels whose `server_llm` flag is on. `openPanel` returns the flag with the code check, Settings disables the option when it's off, and the server refuses otherwise. New panels get the flag from `SERVER_LLM_DEFAULT` (`true` or `false`, default `false`). Switch one panel with `UPDATE panels SET server_llm = true WHERE code = 'ABCD1234';`.
+- **Gemini / OpenAI / Anthropic with your own key:** the key and model name are stored in this browser's `localStorage`. Requests go **straight from the browser to the provider** (`lib/browser-llm.ts`; Anthropic gets its `anthropic-dangerous-direct-browser-access` header), and only the resulting page is sent to the server to store. The key never reaches the server. For `fetchData`, the server only downloads the page (`fetchPageText`), because browsers can't read other sites, and the extraction runs in the browser with your key.
 - **In this browser:** Chrome's built-in Gemini Nano via the [Prompt API](https://developer.chrome.com/docs/ai/prompt-api). It needs a recent desktop Chrome, and Chrome downloads the model (a few GB) on first use. The model runs in the page with a short prompt of its own (`lib/local-model.ts`), because its context window is about 9k tokens and it handles neither tools nor long JSON well. It returns the whole new document as plain HTML, which is saved back to the session. These browsers support the Web Speech API. In other browsers a text box replaces the mic.
 
 ## Status line
@@ -78,6 +80,6 @@ Settings → Panel:
 
   The tools change the session's HTML in place, and the action returns the result. Generated pages use plain JavaScript for local interactions and call the injected `askLLM(request, context)` for anything that needs the model.
 - Live data: generated pages call the injected `fetchData(url, instruction)`, which the page can run on load and on a timer. The main page passes it to the `extractData` server action. `lib/crawl.ts` downloads the page (public http(s) hosts only, 10 s timeout, 3 MB cap) and reduces it to text with table rows kept. `lib/extract.ts` then has the selected model return JSON (`Output.json()`). The page renders that JSON itself. Results are cached for 5 minutes per URL + instruction, and each session gets 30 requests per 10 minutes. Sites that build their content with client-side JavaScript have no data in their HTML and won't work.
-- `lib/panels-db.ts` (server): panels in Postgres; see [Database](#database). `submitRequest(text, origin, model, code)` loads the panel, runs the model and saves the next version. `openPanel`, `createPanel`, `savePanelContent` (local model, Import, Reset) and `revertPanel` are the other panel actions.
+- `lib/panels-db.ts` (server): panels in Postgres; see [Database](#database). `openPanel(code, knownVersion)` checks a code and returns the panel (or `current` / `missing`) together with `serverLlm`. `savePanelContent` stores a page made in the browser (local model, your own key, Import, Reset) and creates the panel on its first change. `submitRequest(text, origin, code)` runs the server's model when the flag allows it. `revertPanel` restores an old version. `extractData` (server model) and `fetchPageText` (page text only) serve `fetchData`.
 - `lib/panel-store.ts` (browser): the `localStorage` cache of server records. `cachePanel` only stores a copy whose version is newer than the cached one.
 - `lib/auth.ts`: a password gate. The page and server actions require a cookie that is set after entering `APP_PASSWORD`.

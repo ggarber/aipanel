@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState, useSyncExternalStore } from "react";
-import { createPanel, openPanel, type PanelResult } from "./actions";
+import { openPanel } from "./actions";
 import { CODE_LENGTH, generateCode, isPanelCode, normalizeCode } from "@/lib/panel-code";
 import {
   cachePanel,
@@ -40,7 +40,6 @@ export default function Home() {
   const [focused, setFocused] = useState(true);
   const [error, setError] = useState("");
   const [shake, setShake] = useState(0);
-  const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -56,22 +55,8 @@ export default function Home() {
     const result = await openPanel(code).catch(() => ({ error: "Couldn't reach the server." }));
     setBusy(false);
     if ("error" in result) return fail(result.error);
-    if (result.status === "found") {
-      cachePanel(result.panel);
-      router.push(`/p/${code}`);
-    } else {
-      setMissing(true);
-      fail(`No panel ${code} yet. Create it?`);
-    }
-  }
-
-  async function create() {
-    if (!isPanelCode(code) || busy) return;
-    setBusy(true);
-    const result: PanelResult = await createPanel(code).catch(() => ({ error: "Couldn’t reach the server." }));
-    setBusy(false);
-    if (result.error || !result.panel) return fail(result.error ?? "Couldn't create the panel.");
-    cachePanel(result.panel);
+    // Found: downloaded into the cache. Missing: it opens empty and its first change creates it.
+    if (result.status === "found") cachePanel(result.panel);
     router.push(`/p/${code}`);
   }
 
@@ -109,7 +94,6 @@ export default function Home() {
               onChange={(e) => {
                 setCode(normalizeCode(e.target.value));
                 setError("");
-                setMissing(false);
               }}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
@@ -126,7 +110,7 @@ export default function Home() {
             {error ? (
               <span className="rounded-lg bg-red-600/90 px-3 py-1 text-white">{error}</span>
             ) : (
-              <span className="text-sky-100">8 letters or numbers: open a panel, or pick a new code</span>
+              <span className="text-sky-100">8 letters or numbers. A new code starts an empty panel.</span>
             )}
           </p>
           <div className="mt-5 flex flex-wrap justify-center gap-4">
@@ -135,18 +119,9 @@ export default function Home() {
             </button>
             <button
               type="button"
-              onClick={create}
-              disabled={!isPanelCode(code) || busy}
-              className={`game-btn game-btn-green min-w-32 ${missing ? "game-pop" : ""}`}
-            >
-              + CREATE
-            </button>
-            <button
-              type="button"
               onClick={() => {
                 setCode(generateCode());
                 setError("");
-                setMissing(false);
                 inputRef.current?.focus();
               }}
               aria-label="Suggest a random code"

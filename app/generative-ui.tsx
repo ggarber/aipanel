@@ -2,7 +2,17 @@
 
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
 import Link from "next/link";
-import { extractData, revertPanel, savePanelContent, submitRequest, type PanelResult, type RequestOrigin } from "./actions";
+import {
+  extractData,
+  fetchPageText,
+  revertPanel,
+  savePanelContent,
+  submitRequest,
+  type ExtractResult,
+  type PanelResult,
+  type RequestOrigin,
+} from "./actions";
+import { extractWithOwnKey, runWithOwnKey } from "@/lib/browser-llm";
 import { INITIAL_HTML } from "@/lib/initial-html";
 import { cachePanel, getPanel, subscribePanels } from "@/lib/panel-store";
 import { historyEntry } from "@/lib/genui";
@@ -89,6 +99,9 @@ const BRIDGE_SCRIPT = `<script>(function(){
 
 const MAX_FETCHES_IN_FLIGHT = 4;
 
+const NO_SERVER_LLM =
+  "This panel can't use the server's model. Pick your own key or the in-browser model in Settings.";
+
 function withBridge(html: string): string {
   const head = /<head[^>]*>/i.exec(html);
   if (head) {
@@ -103,7 +116,19 @@ type Status = "idle" | "listening" | "thinking";
 // Holding the main button this long starts push-to-talk instead of opening the menu.
 const HOLD_MS = 300;
 
-export default function GenerativeUI({ code, offline = false }: { code: string; offline?: boolean }) {
+export default function GenerativeUI({
+  code,
+  offline = false,
+  serverLlm,
+  isNew = false,
+}: {
+  code: string;
+  offline?: boolean;
+  // The server doesn't have this code yet: the first change creates the panel.
+  isNew?: boolean;
+  // Whether this panel may use the server's model (its server_llm flag).
+  serverLlm: boolean;
+}) {
   // The page shown is always the newest stored version of this panel, so saves from this
   // tab or another one show up here, and an older copy never replaces a newer one.
   const panel = useSyncExternalStore(subscribePanels, () => getPanel(code), () => null);
@@ -184,12 +209,17 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
     const started = Date.now();
     startTransition(async () => {
       try {
+        const own = remoteChoice(current);
         const result: PanelResult =
           current.source === "local"
             ? await runLocal(trimmed, origin, activity)
-            : await submitRequest(trimmed, origin, remoteChoice(current), code).catch(() => ({
-                error: "Couldn't reach the server.",
-              }));
+            : own
+              ? await runOwnKey(trimmed, origin, own)
+              : !serverLlm
+                ? { error: NO_SERVER_LLM }
+                : await submitRequest(trimmed, origin, code, getPanel(code)?.html ?? INITIAL_HTML).catch(() => ({
+                    error: "Couldn't reach the server.",
+                  }));
         if (result.panel) cachePanel(result.panel);
         setMessage(result.message ?? "");
         if (result.error) setError(result.error);
@@ -204,6 +234,49 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
         setDownload(null);
       }
     });
+  }
+
+  // The browser calls the provider with the user's key; the server only stores the page.
+  async function runOwnKey(
+    text: string,
+    origin: RequestOrigin,
+    choice: NonNullable<ReturnType<typeof remoteChoice>>,
+  ): Promise<PanelResult> {
+    const doc = getPanel(code) ?? { html: INITIAL_HTML, requests: [] };
+    try {
+      const result = await runWithOwnKey(choice, doc, text, origin);
+      if (!result.changed) return { message: result.message };
+      const entry = historyEntry(text, origin);
+      const saved = await savePanelContent(code, { html: result.html, requests: [...doc.requests, entry] }, entry);
+      return { ...saved, message: result.message };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "The request failed." };
+    }
+  }
+
+  // fetchData: with the server's model when the panel allows it; otherwise the server only
+  // downloads the page and the browser extracts with the user's own key.
+  async function getData(url: unknown, instruction: unknown): Promise<ExtractResult> {
+    const current = getSettings();
+    const own = remoteChoice(current);
+    if (!own) {
+      if (serverLlm) return extractData(code, url, instruction);
+      return {
+        error:
+          current.source === "local"
+            ? "Live data needs a remote model: add your own key in Settings."
+            : NO_SERVER_LLM,
+      };
+    }
+    if (typeof instruction !== "string" || !instruction.trim()) return { error: "fetchData needs an instruction." };
+    const page = await fetchPageText(url);
+    if (page.error || page.text === undefined || !page.url) return { error: page.error ?? "Couldn't read that page." };
+    try {
+      const { value, hit } = extractWithOwnKey(own, { url: page.url, text: page.text }, instruction.trim());
+      return { data: await value, url: page.url, fetchedAt: new Date().toISOString(), cached: hit };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "The extraction failed." };
+    }
   }
 
   // Gemini Nano makes the page here; the server stores it as the next version.
@@ -229,8 +302,12 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
   }
 
   const sendRef = useRef(send);
+  const getDataRef = useRef(getData);
+  const serverLlmRef = useRef(serverLlm);
   useEffect(() => {
     sendRef.current = send;
+    getDataRef.current = getData;
+    serverLlmRef.current = serverLlm;
   });
 
   useEffect(() => {
@@ -258,10 +335,10 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
         try {
           host = new URL(host).hostname;
         } catch {}
-        const model = describeExtractionModel(getSettings());
+        const model = describeExtractionModel(getSettings(), serverLlmRef.current);
         const activity = begin(`Refreshing data from ${host}: ${model} is reading the page…`);
         const started = Date.now();
-        extractData(data.url, data.instruction, remoteChoice(getSettings()))
+        getDataRef.current(data.url, data.instruction)
           .then(
             (result) => {
               reply(result);
@@ -423,22 +500,22 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
 
       <div ref={controlsRef} className="pointer-events-none fixed bottom-10 right-6 flex flex-col items-end gap-3">
         {(transcript || message || error) && (
-          <div className="pointer-events-auto max-w-sm rounded-2xl bg-zinc-900/90 px-4 py-3 text-sm text-zinc-100 shadow-xl backdrop-blur">
+          <div className="game-bubble pointer-events-auto max-w-sm px-4 py-3 text-sm">
             {transcript && (
-              <p className="text-zinc-300">
-                <span className="text-zinc-500">{requestSource === "panel" ? "Page: " : "You: "}</span>
+              <p className="text-sky-100">
+                <span className="game-font text-amber-300">{requestSource === "panel" ? "Page: " : "You: "}</span>
                 {transcript}
               </p>
             )}
             {status === "thinking" && (
-              <p className="mt-1 animate-pulse text-zinc-400">
+              <p className="mt-1 animate-pulse text-sky-200">
                 {download !== null && download < 1
                   ? `Downloading the built-in model… ${Math.round(download * 100)}%`
                   : "Updating the UI…"}
               </p>
             )}
             {message && status !== "thinking" && <p className="mt-1">{message}</p>}
-            {error && <p className="mt-1 text-red-400">{error}</p>}
+            {error && <p className="mt-1 font-semibold text-red-300">{error}</p>}
           </div>
         )}
 
@@ -460,12 +537,12 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
               }}
               autoFocus
               placeholder={supported ? "Type what you want to see…" : "Speech not supported — type instead"}
-              className="w-80 max-w-[calc(100vw-3rem)] rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-900 shadow"
+              className="game-input w-80 max-w-[calc(100vw-8rem)] px-4 py-2 text-sm"
             />
             <button
               type="submit"
               disabled={isPending || !typed.trim()}
-              className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow hover:bg-zinc-700 disabled:opacity-50"
+              className="game-btn game-btn-gold game-btn-sm"
             >
               Send
             </button>
@@ -476,16 +553,16 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
           <div
             role="menu"
             aria-label="Edit with"
-            className="pointer-events-auto flex flex-col overflow-hidden rounded-2xl bg-white text-sm text-zinc-800 shadow-xl ring-1 ring-zinc-200"
+            className="game-menu pointer-events-auto flex flex-col"
           >
-            <button role="menuitem" onClick={chooseChat} className="flex items-center gap-3 px-4 py-2.5 text-left hover:bg-zinc-100">
-              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <button role="menuitem" onClick={chooseChat} className="flex items-center gap-3 px-5 py-2.5 text-left">
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
               Chat
             </button>
-            <button role="menuitem" onClick={chooseVoice} className="flex items-center gap-3 px-4 py-2.5 text-left hover:bg-zinc-100">
-              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <button role="menuitem" onClick={chooseVoice} className="flex items-center gap-3 border-t-2 border-[#0e2257]/20 px-5 py-2.5 text-left">
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="9" y="2" width="6" height="12" rx="3" />
                 <path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8" />
               </svg>
@@ -499,7 +576,7 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
             onClick={() => setSettingsOpen(true)}
             aria-label="Settings"
             title={`Model: ${settings.source === "server" ? "server default" : settings.source === "local" ? "built-in (Chrome)" : PROVIDERS[settings.source].label}`}
-            className="flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-zinc-600 shadow hover:bg-white"
+            className="game-icon-btn"
           >
             <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
@@ -509,7 +586,7 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
           <button
             onClick={reset}
             disabled={isPending}
-            className="rounded-full bg-white/90 px-3 py-1.5 text-xs text-zinc-600 shadow hover:bg-white disabled:opacity-50"
+            className="game-icon-btn"
           >
             Reset
           </button>
@@ -523,9 +600,7 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
             aria-label={listening ? "Stop listening" : "Edit (hold to talk)"}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
-            className={`relative flex h-16 w-16 touch-none select-none items-center justify-center rounded-full text-white shadow-2xl transition [-webkit-touch-callout:none]
-              ${listening ? "bg-red-500 hover:bg-red-600" : "bg-zinc-900 hover:bg-zinc-700"}
-              disabled:cursor-not-allowed disabled:opacity-60`}
+            className={`game-orb touch-none select-none [-webkit-touch-callout:none] ${listening ? "game-orb-red" : ""}`}
           >
             {listening && <span className="absolute inset-0 animate-ping rounded-full bg-red-500/50" />}
             {status === "thinking" ? (
@@ -552,9 +627,9 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
           <Link
             href="/"
             title={offline ? "Server unreachable: showing the copy cached in this browser" : "Back to your panels"}
-            className="font-mono text-amber-300 hover:text-amber-200"
+            className="game-code-chip text-xs hover:brightness-110"
           >
-            {code} · v{panel?.version ?? 0}
+            {code} · {isNew && !panel ? "new" : `v${panel?.version ?? 0}`}
             {offline && <span className="text-red-300"> · offline (cached)</span>}
           </Link>
         }
@@ -565,6 +640,7 @@ export default function GenerativeUI({ code, offline = false }: { code: string; 
           settings={settings}
           onClose={() => setSettingsOpen(false)}
           panel={panel}
+          serverLlm={serverLlm}
           onImport={(imported) =>
             saveOnServer("Importing the panel", () => savePanelContent(code, imported, "Imported"), "Panel imported")
           }

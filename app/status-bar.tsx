@@ -71,24 +71,24 @@ export default function StatusBar({
     <div
       role="status"
       aria-live="polite"
-      className="fixed inset-x-0 bottom-0 z-[5] flex h-7 items-center gap-3 border-t border-zinc-800 bg-zinc-900 px-3 text-xs text-zinc-300"
+      className="game-statusbar fixed inset-x-0 bottom-0 z-[5] flex h-7 items-center gap-3 px-3 text-xs"
     >
       {current ? (
         <>
-          <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-sky-400" />
+          <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full border border-[#0a1430] bg-amber-300" />
           <span className="min-w-0 truncate">
             {current.text}
-            {now > current.startedAt && <span className="text-zinc-500"> · {seconds(now - current.startedAt)}</span>}
-            {activities.length > 1 && <span className="text-zinc-500"> · +{activities.length - 1} more</span>}
+            {now > current.startedAt && <span className="text-sky-300/70"> · {seconds(now - current.startedAt)}</span>}
+            {activities.length > 1 && <span className="text-sky-300/70"> · +{activities.length - 1} more</span>}
           </span>
         </>
       ) : (
         <>
-          <span className={`h-2 w-2 shrink-0 rounded-full ${last?.error ? "bg-red-400" : "bg-emerald-400"}`} />
+          <span className={`h-2.5 w-2.5 shrink-0 rounded-full border border-[#0a1430] ${last?.error ? "bg-red-400" : "bg-emerald-400"}`} />
           <span className={`min-w-0 truncate ${last?.error ? "text-red-300" : ""}`}>
             {last ? (
               <>
-                {last.text} <span className="text-zinc-500">· {clock(last.at)}</span>
+                {last.text} <span className="text-sky-300/70">· {clock(last.at)}</span>
               </>
             ) : (
               "Ready"
@@ -96,7 +96,7 @@ export default function StatusBar({
           </span>
         </>
       )}
-      <span className="ml-auto hidden shrink-0 text-zinc-500 sm:inline">{model}</span>
+      <span className="ml-auto hidden shrink-0 text-sky-300/80 sm:inline">{model}</span>
       {panel && <span className="shrink-0">{panel}</span>}
     </div>
   );

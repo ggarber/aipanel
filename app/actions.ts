@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { generateText, isStepCount } from "ai";
 import { checkPassword, isAuthenticated, setAuthCookie } from "@/lib/auth";
+import { extractWithServer, pageText } from "@/lib/extract";
 import {
   buildPrompt,
   buildTools,
@@ -13,13 +14,13 @@ import {
   SYSTEM,
   type RequestOrigin,
 } from "@/lib/genui";
-import { extractFromPage } from "@/lib/extract";
-import { parseModelChoice, resolveModel } from "@/lib/models";
-import { INITIAL_HTML } from "@/lib/initial-html";
+import { serverModel } from "@/lib/models";
 import { isPanelCode } from "@/lib/panel-code";
 import { MAX_PANEL_REQUESTS, MAX_REQUEST_CHARS, type PanelData } from "@/lib/panel-file";
 import type { PanelRecord } from "@/lib/panel-types";
 import * as panels from "@/lib/panels-db";
+
+export type { RequestOrigin };
 
 // Identifies a browser for rate limiting only.
 const SESSION_COOKIE = "genui_session";
@@ -34,8 +35,7 @@ async function sessionId(): Promise<string> {
   return id;
 }
 
-
-// The panel as the browser holds it: validated here because server actions take untrusted input.
+// A page made in the browser: validated here because server actions take untrusted input.
 function parsePanel(value: unknown): PanelData {
   const v = value as Partial<PanelData> | null;
   if (typeof v?.html !== "string") throw new Error("Missing panel.");
@@ -45,7 +45,6 @@ function parsePanel(value: unknown): PanelData {
     : [];
   return { html: v.html, requests: requests.slice(-MAX_PANEL_REQUESTS) };
 }
-export type { RequestOrigin };
 
 export type LoginState = { error: string };
 
@@ -73,38 +72,39 @@ function failure(err: unknown): PanelResult {
   return { error: err instanceof Error ? err.message : "Something went wrong." };
 }
 
-// knownVersion: the version the browser has cached; the panel is only sent back when the
-// server's is newer.
-export async function openPanel(
-  code: unknown,
-  knownVersion?: number,
-): Promise<{ status: "found"; panel: PanelRecord } | { status: "current" } | { status: "missing" } | { error: string }> {
+const NO_SERVER_LLM =
+  "This panel can't use the server's model. Pick your own key or the in-browser model in Settings.";
+
+// Whether the server may run the model for this panel: its flag, or for a panel that
+// doesn't exist yet, the default new panels will get.
+async function serverLlmAllowed(code: string): Promise<boolean> {
+  const panel = await panels.findPanel(code);
+  return panel ? panel.serverLlm : panels.serverLlmDefault();
+}
+
+export type OpenResult =
+  | { status: "found"; panel: PanelRecord }
+  | { status: "current"; serverLlm: boolean }
+  | { status: "missing"; serverLlm: boolean }
+  | { error: string };
+
+// Checks a code. knownVersion is the version the browser has cached: the panel is only
+// sent back when the server's is newer. A missing panel is created by its first change.
+export async function openPanel(code: unknown, knownVersion?: number): Promise<OpenResult> {
   try {
     const panel = await panels.findPanel(await guard(code));
-    if (!panel) return { status: "missing" };
-    if (typeof knownVersion === "number" && panel.version <= knownVersion) return { status: "current" };
+    if (!panel) return { status: "missing", serverLlm: panels.serverLlmDefault() };
+    if (typeof knownVersion === "number" && panel.version <= knownVersion) {
+      return { status: "current", serverLlm: panel.serverLlm };
+    }
     return { status: "found", panel };
   } catch (err) {
     return { error: (err as Error).message };
   }
 }
 
-// Claims a code for a new panel. content uploads a page that so far only exists in this
-// browser (panels made before the database existed).
-export async function createPanel(code: unknown, content?: unknown): Promise<PanelResult> {
-  try {
-    const c = await guard(code);
-    const doc = content === undefined ? { html: INITIAL_HTML, requests: [] } : parsePanel(content);
-    const panel = await panels.createPanel(c, doc.html, content === undefined ? "Created" : "Uploaded from this browser");
-    if (!panel) return { error: `The code ${c} is already taken.` };
-    if (doc.requests.length) return { panel: await panels.savePanel(c, doc, "Uploaded from this browser") };
-    return { panel };
-  } catch (err) {
-    return failure(err);
-  }
-}
-
-// Saves a page made in the browser (local model, Import, Reset) as the next version.
+// Stores a page made in the browser (local model, the user's own key, Import, Reset) as the
+// next version; the first change of a new code creates the panel.
 export async function savePanelContent(code: unknown, content: unknown, note: unknown): Promise<PanelResult> {
   try {
     const c = await guard(code);
@@ -126,12 +126,13 @@ export async function revertPanel(code: unknown, version: unknown): Promise<Pane
   }
 }
 
-// Runs the model on the stored panel and saves the result as the next version.
+// The server runs its own model on the stored panel (or the starting page, for a new code)
+// and stores the result. Only for panels whose server_llm flag allows it.
 export async function submitRequest(
   transcript: string,
   origin: RequestOrigin,
-  modelChoice: unknown,
   code: unknown,
+  startHtml?: unknown,
 ): Promise<PanelResult> {
   let c: string;
   try {
@@ -141,13 +142,13 @@ export async function submitRequest(
   }
   const text = typeof transcript === "string" ? transcript.trim().slice(0, 4000) : "";
   const current = await panels.findPanel(c);
-  if (!current) return { error: `Panel ${c} doesn't exist.` };
-  if (!text) return { panel: current };
+  if (!(current ? current.serverLlm : panels.serverLlmDefault())) return { error: NO_SERVER_LLM };
+  if (!text) return current ? { panel: current } : {};
 
   try {
-    const doc = { html: current.html, requests: current.requests };
-    // The user's own key (if any) is used for this call only; it is never stored or logged.
-    const { model, providerOptions } = resolveModel(parseModelChoice(modelChoice));
+    const start = current ?? parsePanel({ html: startHtml, requests: [] });
+    const doc = { html: start.html, requests: start.requests };
+    const { model, providerOptions } = serverModel();
     const result = await generateText({
       model,
       system: SYSTEM,
@@ -157,12 +158,10 @@ export async function submitRequest(
       maxOutputTokens: 32000,
       providerOptions,
     });
+    // No change to the page (the model only answered): no new version.
+    if (doc.html === start.html) return { panel: current ?? undefined, message: result.text };
     const entry = historyEntry(text, origin);
     const requests = [...doc.requests, entry].slice(-MAX_PANEL_REQUESTS);
-    // No change to the page (the model only answered): no new version.
-    if (doc.html === current.html) {
-      return { panel: current, message: result.text };
-    }
     return { panel: await panels.savePanel(c, { html: doc.html, requests }, entry), message: result.text };
   } catch (err) {
     console.error("submitRequest failed:", err instanceof Error ? err.message : err);
@@ -171,31 +170,52 @@ export async function submitRequest(
 }
 
 export type ExtractResult = { data?: unknown; url?: string; fetchedAt?: string; cached?: boolean; error?: string };
+export type PageTextResult = { url?: string; text?: string; cached?: boolean; error?: string };
 
 const EXTRACT_LIMIT = 30;
 const EXTRACT_WINDOW_MS = 10 * 60_000;
 const extractCalls = new Map<string, number[]>();
 
-// Called by generated pages through fetchData(url, instruction): the server reads the page
-// and an LLM turns it into JSON; the page renders it.
-export async function extractData(url: unknown, instruction: unknown, modelChoice?: unknown): Promise<ExtractResult> {
-  if (!(await isAuthenticated())) return { error: "Not signed in. Reload the page." };
+// Checks sign-in, input and the per-browser rate limit shared by both data actions.
+async function dataGuard(url: unknown, instruction: unknown = "x"): Promise<string | null> {
+  if (!(await isAuthenticated())) return "Not signed in. Reload the page.";
   if (typeof url !== "string" || typeof instruction !== "string" || !instruction.trim()) {
-    return { error: "fetchData needs a URL and an instruction." };
+    return "fetchData needs a URL and an instruction.";
   }
-  if (url.length > 2000 || instruction.length > 2000) return { error: "URL or instruction too long." };
-
+  if (url.length > 2000 || instruction.length > 2000) return "URL or instruction too long.";
   const id = await sessionId();
   const now = Date.now();
   const recent = (extractCalls.get(id) ?? []).filter((t) => now - t < EXTRACT_WINDOW_MS);
-  if (recent.length >= EXTRACT_LIMIT) return { error: "Too many data requests; try again in a few minutes." };
+  if (recent.length >= EXTRACT_LIMIT) return "Too many data requests; try again in a few minutes.";
   recent.push(now);
   extractCalls.set(id, recent);
+  return null;
+}
 
+// fetchData(url, instruction) on a panel allowed to use the server's model: the server
+// reads the page and extracts JSON.
+export async function extractData(code: unknown, url: unknown, instruction: unknown): Promise<ExtractResult> {
+  const problem = await dataGuard(url, instruction);
+  if (problem) return { error: problem };
   try {
-    return await extractFromPage(url, instruction.trim(), parseModelChoice(modelChoice));
+    if (!(await serverLlmAllowed(await guard(code)))) return { error: NO_SERVER_LLM };
+    const { value, hit } = extractWithServer(url as string, (instruction as string).trim());
+    return { ...(await value), cached: hit };
   } catch (err) {
     console.error("extractData failed:", err instanceof Error ? err.message : err);
+    return { error: err instanceof Error ? err.message : "Couldn't read that page." };
+  }
+}
+
+// fetchData otherwise: the server only downloads the page (browsers can't, because of CORS);
+// the browser extracts with the user's own model.
+export async function fetchPageText(url: unknown): Promise<PageTextResult> {
+  const problem = await dataGuard(url);
+  if (problem) return { error: problem };
+  try {
+    const { value, hit } = pageText(url as string);
+    return { ...(await value), cached: hit };
+  } catch (err) {
     return { error: err instanceof Error ? err.message : "Couldn't read that page." };
   }
 }

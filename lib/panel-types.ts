@@ -21,6 +21,9 @@ export type PanelRecord = {
   createdAt: string;
   updatedAt: string;
   history: PanelVersion[]; // previous versions, newest first, at most MAX_HISTORY
+  // Whether the server may run the model for this panel with its own key. Kept in its own
+  // database column (server_llm) so an operator can switch it per panel.
+  serverLlm: boolean;
 };
 
 // A short name for a page: its <title>, else its first <h1>.
