@@ -69,6 +69,12 @@ const BRIDGE_SCRIPT = `<script>(function(){
   function send(msg) { if (ready) parent.postMessage(msg, "*"); else queue.push(msg); }
   window.askLLM = function (request, context) {
     if (typeof request !== "string" || !request.trim()) return;
+    // Only from a click or key press: a page that calls it on load, in a timer or in a loop
+    // would otherwise regenerate itself forever (each new page calling it again).
+    if (navigator.userActivation && !navigator.userActivation.isActive) {
+      console.warn("askLLM ignored: call it from a click or key handler");
+      return;
+    }
     var ctx;
     try { ctx = context === undefined ? undefined : JSON.parse(JSON.stringify(context)); } catch (e) {}
     send({ type: "genui:ask", request: request, context: ctx });
