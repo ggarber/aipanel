@@ -1,86 +1,54 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { createPanel, openPanel } from "./actions";
+import { openPanel } from "./actions";
 import { cachePanel, getPanel, subscribePanels } from "@/lib/panel-store";
 import GenerativeUI from "./generative-ui";
 
-type Sync = "checking" | "synced" | "missing" | "offline";
+type Server = { state: "checking" } | { state: "offline" } | { state: "ok"; exists: boolean; serverLlm: boolean };
 
-// Shows the cached copy at once, then asks the server for anything newer: the cache only
-// takes the server's copy when its version is higher.
+// Shows the cached copy at once, then asks the server: it takes the server's copy only when
+// that version is newer. A code the server doesn't know opens empty; its first change
+// creates the panel.
 export default function PanelView({ code }: { code: string }) {
-  const panel = useSyncExternalStore(subscribePanels, () => getPanel(code), () => undefined);
-  const [sync, setSync] = useState<Sync>("checking");
-  const [uploadError, setUploadError] = useState("");
+  const cached = useSyncExternalStore(subscribePanels, () => getPanel(code), () => undefined);
+  const [server, setServer] = useState<Server>({ state: "checking" });
 
   useEffect(() => {
     let live = true;
     openPanel(code, getPanel(code)?.version)
       .then((result) => {
         if (!live) return;
-        if ("error" in result) return setSync("offline");
-        if (result.status === "found") cachePanel(result.panel);
-        setSync(result.status === "missing" ? "missing" : "synced");
+        if ("error" in result) return setServer({ state: "offline" });
+        if (result.status === "found") {
+          cachePanel(result.panel);
+          return setServer({ state: "ok", exists: true, serverLlm: result.panel.serverLlm });
+        }
+        setServer({ state: "ok", exists: result.status === "current", serverLlm: result.serverLlm });
       })
-      .catch(() => live && setSync("offline"));
+      .catch(() => live && setServer({ state: "offline" }));
     return () => {
       live = false;
     };
   }, [code]);
 
-  async function upload() {
-    const local = getPanel(code);
-    if (!local) return;
-    const result = await createPanel(code, { html: local.html, requests: local.requests }).catch(() => ({
-      error: "Couldn’t reach the server.",
-    }));
-    if ("panel" in result && result.panel) {
-      // A fresh server record (new id, version 1+) replaces the local-only copy.
-      cachePanel(result.panel);
-      setSync("synced");
-    } else setUploadError(result.error ?? "Upload failed.");
-  }
-
-  if (panel === undefined || (panel === null && sync === "checking")) {
-    return <div className="game-bg fixed inset-0" />;
-  }
-
-  if (sync === "missing") {
+  // Nothing cached: wait for the server before showing anything.
+  if (cached === undefined || (!cached && server.state === "checking")) {
     return (
-      <main className="game-bg flex min-h-screen flex-col items-center justify-center gap-6 px-4 text-center">
-        <p className="game-title text-4xl">Panel not found</p>
-        <p className="max-w-sm text-lg font-semibold text-sky-100">
-          There’s no panel <span className="game-code-chip">{code}</span> on the server.
-          {panel && " This browser has a copy from before panels were stored on the server."}
-        </p>
-        {uploadError && <p className="rounded-lg bg-red-600/90 px-3 py-1 text-white">{uploadError}</p>}
-        <div className="flex gap-4">
-          {panel && (
-            <button type="button" onClick={upload} className="game-btn game-btn-green">
-              Save to server
-            </button>
-          )}
-          <Link href="/" className="game-btn game-btn-gold">
-            Back
-          </Link>
-        </div>
-      </main>
+      <div className="game-bg fixed inset-0 grid place-items-center">
+        <p className="game-outline animate-pulse text-2xl">Loading {code}…</p>
+      </div>
     );
   }
 
-  if (!panel) {
-    return (
-      <main className="game-bg flex min-h-screen flex-col items-center justify-center gap-6 px-4 text-center">
-        <p className="game-title text-4xl">Can’t load the panel</p>
-        <p className="max-w-sm text-lg font-semibold text-sky-100">The server didn’t answer. Check the connection and try again.</p>
-        <Link href="/" className="game-btn game-btn-gold">
-          Back
-        </Link>
-      </main>
-    );
-  }
-
-  return <GenerativeUI key={code} code={code} offline={sync === "offline"} />;
+  const serverLlm = server.state === "ok" ? server.serverLlm : (cached?.serverLlm ?? false);
+  return (
+    <GenerativeUI
+      key={code}
+      code={code}
+      serverLlm={serverLlm}
+      offline={server.state === "offline"}
+      isNew={server.state === "ok" && !server.exists}
+    />
+  );
 }

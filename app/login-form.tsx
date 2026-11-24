@@ -7,25 +7,29 @@ export default function LoginForm({ next }: { next?: string }) {
   const [state, formAction, isPending] = useActionState<LoginState, FormData>(login, { error: "" });
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-4">
-      <form action={formAction} className="w-full max-w-xs space-y-3 rounded-2xl bg-white p-6 shadow-lg">
-        <h1 className="text-lg font-semibold text-zinc-900">Voice UI</h1>
+    <main className="game-bg flex min-h-screen flex-col items-center justify-center gap-8 px-4">
+      <h1 className="game-title game-pop text-6xl">AI PANEL</h1>
+      <form action={formAction} className="game-card game-pop w-full max-w-xs space-y-4 p-6 text-center">
+        <label htmlFor="password" className="game-outline block text-2xl">
+          Enter password
+        </label>
         {next && <input type="hidden" name="next" value={next} />}
         <input
           type="password"
+          id="password"
           name="password"
           placeholder="Password"
           autoFocus
           required
-          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm text-zinc-900"
+          className="game-input w-full px-3 py-2 text-center"
         />
-        {state.error && <p className="text-sm text-red-600">{state.error}</p>}
+        {state.error && <p className="rounded-lg bg-red-600/90 px-3 py-1 text-sm font-semibold text-white">{state.error}</p>}
         <button
           type="submit"
           disabled={isPending}
-          className="w-full rounded-lg bg-zinc-900 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-60"
+          className="game-btn game-btn-gold w-full"
         >
-          {isPending ? "Checking…" : "Enter"}
+          {isPending ? "CHECKING…" : "ENTER"}
         </button>
       </form>
     </main>

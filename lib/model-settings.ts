@@ -39,12 +39,13 @@ export function describeModel(settings: ModelSettings): string {
   const { source } = settings;
   if (source === "server") return `Gemini ${SERVER_MODEL} (server)`;
   if (source === "local") return "Gemini Nano (in this browser)";
-  return `${PROVIDERS[source].label} ${modelFor(settings, source)} (your key)`;
+  return `${PROVIDERS[source].label} ${modelFor(settings, source)} (your key, from this browser)`;
 }
 
-// fetchData extraction always runs on the server; local mode falls back to the server model.
-export function describeExtractionModel(settings: ModelSettings): string {
-  return settings.source === "local" ? describeModel({ ...settings, source: "server" }) : describeModel(settings);
+// fetchData: own key extracts in the browser; otherwise the server's model, when allowed.
+export function describeExtractionModel(settings: ModelSettings, serverLlm: boolean): string {
+  if (isProviderId(settings.source)) return describeModel(settings);
+  return serverLlm ? describeModel({ ...settings, source: "server" }) : "no model";
 }
 
 export function remoteChoice(settings: ModelSettings): RemoteModelChoice | undefined {
