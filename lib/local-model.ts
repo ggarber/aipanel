@@ -48,17 +48,40 @@ const LOCAL_SYSTEM = `You build and edit web pages from a user's request. Reply 
 new HTML document (<!doctype html> … </html>): no markdown, no explanation.
 - Self-contained: inline all CSS and JavaScript. No external resources.
 - Polished, modern, responsive. Keep the bottom-right corner (96x96px) free; a button sits there.
+- Put the visible content (text, items, numbers) directly in the HTML, not only in JavaScript.
+- Put every <script> at the very end of <body>, after the elements it uses.
 - Use plain JavaScript for interactions (toggles, counters, filters, adding items).
-- For a button that needs new content, call askLLM("short instruction", {state}) on click;
-  it is already defined in the page.
+- "4x2 grid" means 4 columns and 2 rows.
+- Only if a button must fetch new content: inside that button's click handler, call
+  askLLM with a plain-language instruction (it is already defined in the page). Never call it
+  when the page loads, in a timer or in a loop. Pick random items with Math.random instead.
 - When editing, keep everything in the current document that the request doesn't change.`;
 
-// Pulls the document out of the reply, which may be wrapped in a markdown fence.
+// Pulls the document out of the reply, which may be wrapped in a markdown fence, and
+// repairs what the small model often gets wrong (see repairHtml).
 export function extractHtml(reply: string): string | null {
   const start = reply.search(/<!doctype html|<html[\s>]/i);
+  if (start === -1) return null;
   const end = reply.toLowerCase().lastIndexOf("</html>");
-  if (start === -1 || end === -1 || end < start) return null;
-  return reply.slice(start, end + "</html>".length);
+  // A reply cut off at the token limit: keep what's there and close the document.
+  const html = end > start ? reply.slice(start, end + "</html>".length) : reply.slice(start).replace(/```\s*$/, "") + "\n</body></html>";
+  return repairHtml(html);
+}
+
+// Gemini Nano often puts its <script> in <head> (or before the elements it uses), so it runs
+// before the page exists: querySelector returns null and nothing gets filled in. Inline
+// scripts move to the end of <body>, where everything they look for exists. Scripts with a
+// src stay where they are, since inline code may depend on them.
+export function repairHtml(html: string): string {
+  const moved: string[] = [];
+  const rest = html.replace(/<script\b(?![^>]*\bsrc\s*=)[^>]*>[\s\S]*?<\/script>/gi, (script) => {
+    moved.push(script);
+    return "";
+  });
+  if (!moved.length) return html;
+  const close = rest.toLowerCase().lastIndexOf("</body>");
+  const at = close === -1 ? rest.toLowerCase().lastIndexOf("</html>") : close;
+  return at === -1 ? rest + moved.join("\n") : rest.slice(0, at) + moved.join("\n") + "\n" + rest.slice(at);
 }
 
 // fresh: the screen still shows the welcome page, which the small model would otherwise
