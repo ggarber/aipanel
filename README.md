@@ -2,7 +2,7 @@
 
 A voice-driven generative UI. Use the edit button (bottom right) to describe a screen, and the model builds or edits it as HTML:
 
-- **Click** it to choose **Chat** (type the request) or **Voice** (speak it; click again to stop).
+- **Click** it to choose **Chat** (type the request) or **Voice** (speak it; click again to stop). Clicking it while the chat box is open closes the chat box.
 - **Hold** it to talk right away (push-to-talk); release to send.
 
 ## Run
