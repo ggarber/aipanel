@@ -12,7 +12,7 @@ cp .env.example .env.local   # add GOOGLE_GENERATIVE_AI_API_KEY and APP_PASSWORD
 npm run dev
 ```
 
-Open http://localhost:3000 in Chrome, Edge or Safari.
+Open http://localhost:3000 in Chrome, Edge or Safari. These browsers support the Web Speech API. In other browsers a text box replaces the mic.
 
 ## Panels and codes
 
@@ -52,7 +52,7 @@ The gear button opens Settings. The choice is saved in this browser.
 
 - **Server:** Gemini (`gemini-3.8-flash`) with the server's `GOOGLE_GENERATIVE_AI_API_KEY`. It's only available for panels whose `server_llm` flag is on. `openPanel` returns the flag with the code check, Settings disables the option when it's off, and the server refuses otherwise. New panels get the flag from `SERVER_LLM_DEFAULT` (`true` or `false`, default `false`). Switch one panel with `UPDATE panels SET server_llm = true WHERE code = 'ABCD1234';`.
 - **Gemini / OpenAI / Anthropic with your own key:** the key and model name are stored in this browser's `localStorage`. Requests go **straight from the browser to the provider** (`lib/browser-llm.ts`; Anthropic gets its `anthropic-dangerous-direct-browser-access` header), and only the resulting page is sent to the server to store. The key never reaches the server. For `fetchData`, the server only downloads the page (`fetchPageText`), because browsers can't read other sites, and the extraction runs in the browser with your key.
-- **In this browser:** Chrome's built-in Gemini Nano via the [Prompt API](https://developer.chrome.com/docs/ai/prompt-api). It needs a recent desktop Chrome, and Chrome downloads the model (a few GB) on first use. The model runs in the page with a short prompt of its own (`lib/local-model.ts`), because its context window is about 9k tokens and it handles neither tools nor long JSON well. It returns the whole new document as plain HTML. Before saving, inline `<script>`s are moved to the end of `<body>`, because Nano often puts them in `<head>`, where they run before the page exists. A reply cut off before `</html>` is closed rather than rejected. These browsers support the Web Speech API. In other browsers a text box replaces the mic.
+- **In this browser:** Chrome's built-in Gemini Nano via the [Prompt API](https://developer.chrome.com/docs/ai/prompt-api). It needs a recent desktop Chrome, and Chrome downloads the model (a few GB) on first use. The model runs in the page with a short prompt of its own (`lib/local-model.ts`), because its context window is about 9k tokens and it handles neither tools nor long JSON well. It returns the whole new document as plain HTML. Before saving, inline `<script>`s are moved to the end of `<body>`, because Nano often puts them in `<head>`, where they run before the page exists. A reply cut off before `</html>` is closed rather than rejected. **Experimental and very inaccurate:** expect simple, often wrong or half-finished pages; use a remote model for anything that matters. The Settings dialog says so too.
 
 ## Status line
 

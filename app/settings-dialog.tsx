@@ -134,7 +134,7 @@ export default function SettingsDialog({
                   ? "Server (Gemini, the app’s key)"
                   : "Server (not enabled for this panel)"
                 : source === "local"
-                  ? "In this browser (Chrome built-in Gemini Nano)"
+                  ? "In this browser (Gemini Nano, experimental)"
                   : `${PROVIDERS[source].label} with your API key`}
             </label>
           ))}
@@ -142,8 +142,10 @@ export default function SettingsDialog({
 
         {draft.source === "local" && (
           <p className="game-well p-4 text-sky-100">
-            {LOCAL_STATUS[local] ?? LOCAL_STATUS.unavailable} Runs on this device; nothing is sent to a model
-            provider. It’s a small model, so pages will be simpler.
+            <strong className="mb-1 block text-amber-300">Experimental and very inaccurate.</strong>
+            Gemini Nano is a tiny model: expect simple, often wrong or half-finished pages. Use a remote model
+            for anything that matters. {LOCAL_STATUS[local] ?? LOCAL_STATUS.unavailable} Runs on this device;
+            nothing is sent to a model provider.
           </p>
         )}
 
@@ -215,7 +217,7 @@ export default function SettingsDialog({
               ))}
             </ol>
             <p className="text-xs text-sky-100">
-              The last 5 versions before the current one are kept in this browser. Reverting saves the old page as a new
+              The last 5 versions before the current one are kept on the server (and cached here). Reverting saves the old page as a new
               version, so you can undo it.
             </p>
           </section>

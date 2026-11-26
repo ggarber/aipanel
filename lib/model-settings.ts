@@ -38,7 +38,7 @@ export function modelFor(settings: ModelSettings, provider: ProviderId): string 
 export function describeModel(settings: ModelSettings): string {
   const { source } = settings;
   if (source === "server") return `Gemini ${SERVER_MODEL} (server)`;
-  if (source === "local") return "Gemini Nano (in this browser)";
+  if (source === "local") return "Gemini Nano (in this browser, experimental)";
   return `${PROVIDERS[source].label} ${modelFor(settings, source)} (your key, from this browser)`;
 }
 
