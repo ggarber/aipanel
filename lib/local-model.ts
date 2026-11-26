@@ -56,6 +56,8 @@ new HTML document (<!doctype html> … </html>): no markdown, no explanation.
   askLLM with a plain-language instruction (it is already defined in the page). Never call it
   when the page loads, in a timer or in a loop. Pick random items with Math.random instead.
 - When editing, keep everything in the current document that the request doesn't change.
+- To keep data the user adds (tasks, notes, scores) use the page's saveState(key, value) and
+  await loadState(key) (returns {value} or null); not localStorage.
 - Start the document with a short <!-- DESIGN NOTES ... --> comment (layout, colors, fonts,
   components). Follow the existing notes when editing and keep them updated.`;
 

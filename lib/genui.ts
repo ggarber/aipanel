@@ -30,7 +30,7 @@ Design notes — the page's memory of how it was built:
   Style: color palette (hex), fonts, sizes, spacing, radius, shadows, light/dark, mood.
   Components: the reusable pieces and how they look (buttons, cards, inputs, badges).
   Behavior: interactions and scripts (what's plain JS, askLLM, fetchData and their refresh).
-  Data: where the content came from (sources, dates looked up), what is live.
+  Data: where the content came from (sources, dates looked up), what is live, saved-state keys.
   -->
 - Before any change, read the notes and follow them, so new and changed parts match the
   existing layout and style (same palette, fonts, spacing and component styles) unless the
@@ -65,6 +65,22 @@ Interactivity — pick the cheapest mechanism that works:
   - Only call askLLM from a user action (click, submit) — never on load, in timers, or in loops.
   - Disable the triggering control and show a loading state when calling it; the whole page is
     replaced when the response arrives.
+Saved state — the page's own data, kept on the server for this panel, so it survives reloads
+and follows the panel to other devices. Global functions in the page, each returns a Promise:
+  - saveState(key, value): stores a JSON value (object, array, number…; up to 100 KB) under a
+    short key such as "tasks", "events" or "stats". Resolves to {key, value, date}.
+  - loadState(key): resolves to {key, value, date} (date = last save, ISO), or null if never saved.
+  - listState(prefix?): resolves to [{key, date}] of the saved keys (optionally starting with prefix).
+  - deleteState(key): removes a key; resolves to true if it existed.
+  - Use it for anything the user creates or changes that should be there next time: tasks,
+    calendar events, notes, scores, stats, settings, form drafts. Don't use localStorage for it.
+  - On load: show the page, call loadState for each key, then render the saved data (fall back
+    to defaults when it's null). After each change: update the page right away and call saveState
+    with the whole new value (debounce rapid changes such as typing by ~500 ms).
+  - Show errors from saveState briefly (e.g. "Not saved") and keep the change on screen.
+  - It may run on load and after any change (unlike askLLM). Keep one key per kind of data.
+  - Name the keys in the design notes' Data line.
+
 Live data from the web — fetchData(url, instruction) is also a global function in the page.
 It returns a Promise of { data, url, fetchedAt }: the server downloads the page at url, and an
 LLM extracts what the instruction asks for and returns it as JSON in data. It rejects with an
