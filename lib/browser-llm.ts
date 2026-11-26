@@ -3,7 +3,9 @@
 
 import { generateText, isStepCount } from "ai";
 import { extractJson } from "./extract-core";
-import { buildPrompt, buildTools, SYSTEM, type RequestOrigin } from "./genui";
+import { fetchPageText } from "@/app/actions";
+import { buildPrompt, buildTools, MAX_AGENT_STEPS, SYSTEM, type AgentIO, type RequestOrigin } from "./genui";
+import { webSearch } from "./web-search";
 import { createModel } from "./model-factory";
 import type { RemoteModelChoice } from "./model-settings";
 
@@ -12,6 +14,7 @@ export async function runWithOwnKey(
   doc: { html: string; requests: string[] },
   text: string,
   origin: RequestOrigin,
+  onTool?: AgentIO["onTool"],
 ): Promise<{ html: string; message: string; changed: boolean }> {
   if (!choice.apiKey) throw new Error("Add your API key in Settings.");
   const work = { html: doc.html, requests: doc.requests };
@@ -20,8 +23,18 @@ export async function runWithOwnKey(
     model,
     system: SYSTEM,
     prompt: buildPrompt(work, text, origin),
-    tools: buildTools(work),
-    stopWhen: isStepCount(8),
+    // The loop runs here: search goes from the browser to the provider with the user's key;
+    // fetch_url asks our server for the page text (browsers can't read other sites).
+    tools: buildTools(work, {
+      search: (query) => webSearch(choice, query),
+      fetch: async (url) => {
+        const page = await fetchPageText(url);
+        if (page.error || page.text === undefined || !page.url) throw new Error(page.error ?? "Couldn't read that page.");
+        return { url: page.url, text: page.text };
+      },
+      onTool,
+    }),
+    stopWhen: isStepCount(MAX_AGENT_STEPS),
     maxOutputTokens: 32000,
     providerOptions,
   });

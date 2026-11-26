@@ -54,6 +54,15 @@ The gear button opens Settings. The choice is saved in this browser.
 - **Gemini / OpenAI / Anthropic with your own key:** the key and model name are stored in this browser's `localStorage`. Requests go **straight from the browser to the provider** (`lib/browser-llm.ts`; Anthropic gets its `anthropic-dangerous-direct-browser-access` header), and only the resulting page is sent to the server to store. The key never reaches the server. For `fetchData`, the server only downloads the page (`fetchPageText`), because browsers can't read other sites, and the extraction runs in the browser with your key.
 - **In this browser:** Chrome's built-in Gemini Nano via the [Prompt API](https://developer.chrome.com/docs/ai/prompt-api). It needs a recent desktop Chrome, and Chrome downloads the model (a few GB) on first use. The model runs in the page with a short prompt of its own (`lib/local-model.ts`), because its context window is about 9k tokens and it handles neither tools nor long JSON well. It returns the whole new document as plain HTML. Before saving, inline `<script>`s are moved to the end of `<body>`, because Nano often puts them in `<head>`, where they run before the page exists. A reply cut off before `</html>` is closed rather than rejected. **Experimental and very inaccurate:** expect simple, often wrong or half-finished pages; use a remote model for anything that matters. The Settings dialog says so too.
 
+## Agent tools
+
+Requests to the server's model and to your own key run as an agent: a loop of up to 12 model steps (`MAX_AGENT_STEPS`) that can call these tools (`lib/genui.ts`):
+- **`set_html` / `edit_html`:** change the page.
+- **`web_search(query)`:** a separate call to the same model with the provider's own search tool (`lib/web-search.ts`): Google Search grounding for Gemini, OpenAI's and Anthropic's web search. Returns a short answer and source URLs.
+- **`fetch_url(url)`:** the text of a public page, from the server's address-checked fetcher (`lib/crawl.ts`, cached for 5 minutes). From the browser it goes through the `fetchPageText` server action, since browsers can't read other sites.
+
+On the server, each research step is logged as `agent <CODE> web_search|fetch_url: …`. In the browser, the status line shows "searching the web for …" / "reading example.com…". Gemini Nano in the browser has no tool calling, so it stays single-shot.
+
 ## Status line
 
 A bar along the bottom (`app/status-bar.tsx`) shows what is running right now, with a live timer:
