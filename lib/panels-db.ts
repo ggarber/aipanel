@@ -29,7 +29,16 @@ interface Store {
   getRecord(id: string): Promise<PanelRecord | null>;
   // Writes the record only if the stored version is still `expected`; returns whether it did.
   compareAndSet(id: string, expected: number, record: PanelRecord): Promise<boolean>;
+  // Saved state for the panel's page (panel_state): key, JSON value, date of the last save.
+  getState(panelId: string, key: string): Promise<StateEntry | null>;
+  // Returns null when the panel already has MAX_STATE_KEYS keys and this one is new.
+  setState(panelId: string, key: string, value: unknown): Promise<StateEntry | null>;
+  listState(panelId: string, prefix: string): Promise<{ key: string; date: string }[]>;
+  deleteState(panelId: string, key: string): Promise<boolean>;
 }
+
+export type StateEntry = { key: string; value: unknown; date: string };
+export const MAX_STATE_KEYS = 500;
 
 function postgresStore(url: string): Store {
   const sql = neon(url);
@@ -45,6 +54,16 @@ function postgresStore(url: string): Store {
         updated_at timestamptz NOT NULL DEFAULT now()
       )`
       .then(() => sql`ALTER TABLE panels ADD COLUMN IF NOT EXISTS server_llm boolean NOT NULL DEFAULT false`)
+      .then(
+        () => sql`
+          CREATE TABLE IF NOT EXISTS panel_state (
+            panel_id uuid NOT NULL REFERENCES panels(id) ON DELETE CASCADE,
+            key text NOT NULL,
+            value jsonb NOT NULL,
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (panel_id, key)
+          )`,
+      )
       .catch((err) => {
         ready = null;
         throw err;
@@ -79,7 +98,41 @@ function postgresStore(url: string): Store {
         WHERE id = ${id} AND version = ${expected} RETURNING id`;
       return rows.length === 1;
     },
+    async getState(panelId, key) {
+      await schema();
+      const rows = await sql`SELECT key, value, updated_at FROM panel_state WHERE panel_id = ${panelId} AND key = ${key}`;
+      return rows[0] ? entry(rows[0]) : null;
+    },
+    async setState(panelId, key, value) {
+      await schema();
+      // Inserts a new key only while the panel is under MAX_STATE_KEYS; updates always.
+      const rows = await sql`
+        INSERT INTO panel_state (panel_id, key, value)
+        SELECT ${panelId}, ${key}, ${JSON.stringify(value)}::jsonb
+        WHERE EXISTS (SELECT 1 FROM panel_state WHERE panel_id = ${panelId} AND key = ${key})
+           OR (SELECT count(*) FROM panel_state WHERE panel_id = ${panelId}) < ${MAX_STATE_KEYS}
+        ON CONFLICT (panel_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        RETURNING key, value, updated_at`;
+      return rows[0] ? entry(rows[0]) : null;
+    },
+    async listState(panelId, prefix) {
+      await schema();
+      const rows = await sql`
+        SELECT key, updated_at FROM panel_state
+        WHERE panel_id = ${panelId} AND left(key, ${prefix.length}) = ${prefix}
+        ORDER BY key LIMIT ${MAX_STATE_KEYS}`;
+      return rows.map((r) => ({ key: r.key as string, date: new Date(r.updated_at as string).toISOString() }));
+    },
+    async deleteState(panelId, key) {
+      await schema();
+      const rows = await sql`DELETE FROM panel_state WHERE panel_id = ${panelId} AND key = ${key} RETURNING key`;
+      return rows.length === 1;
+    },
   };
+}
+
+function entry(row: Record<string, unknown>): StateEntry {
+  return { key: row.key as string, value: row.value, date: new Date(row.updated_at as string).toISOString() };
 }
 
 function memoryStore(): Store {
@@ -87,6 +140,13 @@ function memoryStore(): Store {
     panelsMemory?: { codes: Map<string, string>; records: Map<string, PanelRecord>; flags: Map<string, boolean> };
   };
   const db = (g.panelsMemory ??= { codes: new Map(), records: new Map(), flags: new Map() });
+  const gs = globalThis as unknown as { panelsMemoryState?: Map<string, Map<string, { value: unknown; date: string }>> };
+  const states = (gs.panelsMemoryState ??= new Map());
+  const stateOf = (panelId: string) => {
+    let m = states.get(panelId);
+    if (!m) states.set(panelId, (m = new Map()));
+    return m;
+  };
   return {
     getId: async (code) => db.codes.get(code) ?? null,
     async claimCode(code, id, serverLlm) {
@@ -103,6 +163,26 @@ function memoryStore(): Store {
       if ((db.records.get(id)?.version ?? 0) !== expected) return false;
       db.records.set(id, structuredClone(record));
       return true;
+    },
+    async getState(panelId, key) {
+      const e = stateOf(panelId).get(key);
+      return e ? { key, value: structuredClone(e.value), date: e.date } : null;
+    },
+    async setState(panelId, key, value) {
+      const m = stateOf(panelId);
+      if (!m.has(key) && m.size >= MAX_STATE_KEYS) return null;
+      const e = { value: structuredClone(value), date: new Date().toISOString() };
+      m.set(key, e);
+      return { key, value, date: e.date };
+    },
+    async listState(panelId, prefix) {
+      return [...stateOf(panelId).entries()]
+        .filter(([k]) => k.startsWith(prefix))
+        .map(([key, e]) => ({ key, date: e.date }))
+        .sort((a, b) => a.key.localeCompare(b.key));
+    },
+    async deleteState(panelId, key) {
+      return stateOf(panelId).delete(key);
     },
   };
 }
@@ -192,4 +272,29 @@ export async function savePanel(
     if (await db().compareAndSet(current.id, current.version, next)) return next;
   }
   throw new Error("The panel is changing too fast; try again.");
+}
+
+// Saved state of a panel's page, by code. The panel must exist (its page has been saved).
+async function panelIdOf(code: string): Promise<string> {
+  const id = await db().getId(code);
+  if (!id || !(await db().getRecord(id))) throw new Error(`Panel ${code} isn't saved yet.`);
+  return id;
+}
+
+export async function getPanelState(code: string, key: string) {
+  return db().getState(await panelIdOf(code), key);
+}
+
+export async function setPanelState(code: string, key: string, value: unknown) {
+  const saved = await db().setState(await panelIdOf(code), key, value);
+  if (!saved) throw new Error(`This panel already has ${MAX_STATE_KEYS} saved keys. Delete some first.`);
+  return saved;
+}
+
+export async function listPanelState(code: string, prefix: string) {
+  return db().listState(await panelIdOf(code), prefix);
+}
+
+export async function deletePanelState(code: string, key: string) {
+  return db().deleteState(await panelIdOf(code), key);
 }

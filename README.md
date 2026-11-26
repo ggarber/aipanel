@@ -54,6 +54,19 @@ The gear button opens Settings. The choice is saved in this browser.
 - **Gemini / OpenAI / Anthropic with your own key:** the key and model name are stored in this browser's `localStorage`. Requests go **straight from the browser to the provider** (`lib/browser-llm.ts`; Anthropic gets its `anthropic-dangerous-direct-browser-access` header), and only the resulting page is sent to the server to store. The key never reaches the server. For `fetchData`, the server only downloads the page (`fetchPageText`), because browsers can't read other sites, and the extraction runs in the browser with your key.
 - **In this browser:** Chrome's built-in Gemini Nano via the [Prompt API](https://developer.chrome.com/docs/ai/prompt-api). It needs a recent desktop Chrome, and Chrome downloads the model (a few GB) on first use. The model runs in the page with a short prompt of its own (`lib/local-model.ts`), because its context window is about 9k tokens and it handles neither tools nor long JSON well. It returns the whole new document as plain HTML. Before saving, inline `<script>`s are moved to the end of `<body>`, because Nano often puts them in `<head>`, where they run before the page exists. A reply cut off before `</html>` is closed rather than rejected. **Experimental and very inaccurate:** expect simple, often wrong or half-finished pages; use a remote model for anything that matters. The Settings dialog says so too.
 
+## Saved state
+
+Generated pages can keep their own data on the server, per panel, so it survives reloads and follows the panel to other devices (tasks, calendars, stats…). Injected into every page, each returning a Promise:
+
+| Call | Resolves to |
+| --- | --- |
+| `saveState(key, value)` | `{key, value, date}`. `value` is any JSON value up to 100 KB |
+| `loadState(key)` | `{key, value, date}`, or `null` if it was never saved |
+| `listState(prefix?)` | `[{key, date}]` |
+| `deleteState(key)` | `true` if the key existed |
+
+`date` is the time of the last save (ISO). The page posts to the parent, which calls the `panelState` server action (`app/actions.ts`, 300 calls per minute per browser). That stores rows in `panel_state` (`panel_id`, `key`, `value jsonb`, `updated_at`, primary key `(panel_id, key)`, cascades when the panel is deleted), with at most 500 keys per panel and keys of up to 200 characters. The table is created on first use. The agent's prompt tells it to load state on page load, save after each change (debounced), and name the keys in the design notes' Data line. A panel has to be saved (its first change made) before its page can save state.
+
 ## Design notes
 
 Every generated page starts with a `<!-- DESIGN NOTES … -->` comment: Purpose, Layout, Style (exact hex colors and fonts), Components, Behavior and Data. The prompt (`lib/genui.ts`) tells the model to read the notes before each change, to keep new and changed parts consistent with them, and to update them in the same edit when layout, style, behavior or data change. Pages without notes get them on their next change. Gemini Nano's short prompt asks for the same in one line.

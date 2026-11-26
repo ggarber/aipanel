@@ -211,3 +211,53 @@ export async function fetchPageText(url: unknown): Promise<PageTextResult> {
     return { error: err instanceof Error ? err.message : "Couldn't read that page." };
   }
 }
+
+export type StateOp = "get" | "set" | "list" | "delete";
+export type StateResult = {
+  entry?: { key: string; value: unknown; date: string } | null;
+  keys?: { key: string; date: string }[];
+  deleted?: boolean;
+  error?: string;
+};
+
+const MAX_STATE_KEY = 200;
+const MAX_STATE_BYTES = 100_000;
+const STATE_LIMIT = 300;
+const STATE_WINDOW_MS = 60_000;
+const stateCalls = new Map<string, number[]>();
+
+// Saved state for generated pages (saveState / loadState / listState / deleteState): JSON values
+// by key, per panel, in the database, so they follow the panel to other devices.
+export async function panelState(code: unknown, op: unknown, key?: unknown, value?: unknown): Promise<StateResult> {
+  try {
+    const c = await guard(code);
+    const id = await sessionId();
+    const now = Date.now();
+    const recent = (stateCalls.get(id) ?? []).filter((t) => now - t < STATE_WINDOW_MS);
+    if (recent.length >= STATE_LIMIT) return { error: "Too many saves; slow down." };
+    recent.push(now);
+    stateCalls.set(id, recent);
+
+    if (op === "list") {
+      const prefix = typeof key === "string" ? key.slice(0, MAX_STATE_KEY) : "";
+      return { keys: await panels.listPanelState(c, prefix) };
+    }
+    if (typeof key !== "string" || !key.trim() || key.length > MAX_STATE_KEY) {
+      return { error: `State keys are 1–${MAX_STATE_KEY} characters.` };
+    }
+    if (op === "get") return { entry: await panels.getPanelState(c, key) };
+    if (op === "delete") return { deleted: await panels.deletePanelState(c, key) };
+    if (op === "set") {
+      let json: string | undefined;
+      try {
+        json = JSON.stringify(value);
+      } catch {}
+      if (json === undefined) return { error: "saveState needs a JSON value." };
+      if (json.length > MAX_STATE_BYTES) return { error: "That value is too large (100 KB at most)." };
+      return { entry: await panels.setPanelState(c, key, JSON.parse(json)) };
+    }
+    return { error: "Unknown state operation." };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Couldn't use the saved state." };
+  }
+}

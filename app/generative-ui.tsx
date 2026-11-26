@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   extractData,
   fetchPageText,
+  panelState,
   revertPanel,
   savePanelContent,
   submitRequest,
@@ -87,6 +88,21 @@ const BRIDGE_SCRIPT = `<script>(function(){
       send({ type: "genui:fetch", id: id, url: String(url), instruction: String(instruction) });
     });
   };
+  // Saved state, kept on the server per panel (follows the panel to other devices).
+  function state(op, key, value) {
+    return new Promise(function (resolve, reject) {
+      var id = ++next, v;
+      if (op === "set") {
+        try { v = JSON.parse(JSON.stringify(value)); } catch (e) { return reject(new Error("saveState needs a JSON value")); }
+      }
+      pending[id] = { resolve: resolve, reject: reject, state: op };
+      send({ type: "genui:state", id: id, op: op, key: key === undefined ? undefined : String(key), value: v });
+    });
+  }
+  window.saveState = function (key, value) { return state("set", key, value); };
+  window.loadState = function (key) { return state("get", key); };
+  window.listState = function (prefix) { return state("list", prefix || ""); };
+  window.deleteState = function (key) { return state("delete", key); };
   window.addEventListener("message", function (e) {
     var d = e.data;
     if (e.source !== parent || !d) return;
@@ -95,11 +111,14 @@ const BRIDGE_SCRIPT = `<script>(function(){
       queue.splice(0).forEach(function (m) { parent.postMessage(m, "*"); });
       return;
     }
-    if (d.type !== "genui:fetch:result" || !pending[d.id]) return;
+    if ((d.type !== "genui:fetch:result" && d.type !== "genui:state:result") || !pending[d.id]) return;
     var p = pending[d.id];
     delete pending[d.id];
     if (d.error) p.reject(new Error(d.error));
-    else p.resolve({ data: d.data, url: d.url, fetchedAt: d.fetchedAt });
+    else if (d.type === "genui:state:result") {
+      // get: {key, value, date} or null; set: {key, value, date}; list: [{key, date}]; delete: true/false
+      p.resolve(p.state === "list" ? d.keys : p.state === "delete" ? d.deleted : d.entry);
+    } else p.resolve({ data: d.data, url: d.url, fetchedAt: d.fetchedAt });
   });
 })();</script>`;
 
@@ -157,7 +176,7 @@ export default function GenerativeUI({
     () => true,
   );
   const [isPending, startTransition] = useTransition();
-  const { activities, last, begin, update, end } = useActivities();
+  const { activities, last, begin, update, end, note } = useActivities();
 
   const [requestSource, setRequestSource] = useState<RequestOrigin["source"]>("voice");
 
@@ -340,7 +359,20 @@ export default function GenerativeUI({
         id?: unknown;
         url?: unknown;
         instruction?: unknown;
+        op?: unknown;
+        key?: unknown;
+        value?: unknown;
       } | null;
+      if (data?.type === "genui:state" && typeof data.id === "number") {
+        const id = data.id;
+        panelState(code, data.op, data.key, data.value)
+          .catch(() => ({ error: "Couldn't reach the server." }))
+          .then((result) => {
+            frame.postMessage({ type: "genui:state:result", id, ...result }, "*");
+            if (result.error) note(`Saved state: ${result.error}`, true);
+          });
+        return;
+      }
       if (data?.type === "genui:fetch" && typeof data.id === "number") {
         const id = data.id;
         const reply = (result: object) => frame.postMessage({ type: "genui:fetch:result", id, ...result }, "*");
@@ -383,7 +415,7 @@ export default function GenerativeUI({
     window.addEventListener("message", onMessage);
     signalReady();
     return () => window.removeEventListener("message", onMessage);
-  }, [begin, end]);
+  }, [begin, end, note, code]);
 
   // Tells the page's bridge that messages can flow; also sent on every iframe (re)load.
   function signalReady() {
