@@ -2,9 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
 import { generateText, isStepCount } from "ai";
-import { checkPassword, isAuthenticated, setAuthCookie } from "@/lib/auth";
 import { extractWithServer, pageText } from "@/lib/extract";
 import {
   buildPrompt,
@@ -46,24 +44,10 @@ function parsePanel(value: unknown): PanelData {
   return { html: v.html, requests: requests.slice(-MAX_PANEL_REQUESTS) };
 }
 
-export type LoginState = { error: string };
-
-export async function login(_prev: LoginState, formData: FormData): Promise<LoginState> {
-  const attempt = String(formData.get("password") ?? "");
-  if (!checkPassword(attempt)) {
-    if (!process.env.APP_PASSWORD) console.error("APP_PASSWORD is not set; sign-in is disabled.");
-    return { error: "Wrong password." };
-  }
-  await setAuthCookie();
-  // Back to the panel that asked for the sign-in, if any.
-  const next = String(formData.get("next") ?? "");
-  redirect(/^\/p\/[A-Z0-9]{8}$/.test(next) ? next : "/");
-}
-
 export type PanelResult = { panel?: PanelRecord; message?: string; error?: string };
 
+// There is no sign-in: knowing a panel's code is what gives access to it.
 async function guard(code: unknown): Promise<string> {
-  if (!(await isAuthenticated())) throw new Error("Not signed in. Reload the page.");
   if (typeof code !== "string" || !isPanelCode(code)) throw new Error("Panel codes are 8 letters or numbers.");
   return code;
 }
@@ -178,7 +162,6 @@ const extractCalls = new Map<string, number[]>();
 
 // Checks sign-in, input and the per-browser rate limit shared by both data actions.
 async function dataGuard(url: unknown, instruction: unknown = "x"): Promise<string | null> {
-  if (!(await isAuthenticated())) return "Not signed in. Reload the page.";
   if (typeof url !== "string" || typeof instruction !== "string" || !instruction.trim()) {
     return "fetchData needs a URL and an instruction.";
   }
