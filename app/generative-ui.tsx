@@ -466,7 +466,11 @@ export default function GenerativeUI({
     if (isPending) return;
     if (listening) recognitionRef.current?.stop();
     else if (!supported) setTextOpen(true);
-    else setMenuOpen((open) => !open);
+    // The chat box is open: the button closes it (without speech it stays, it's the only input).
+    else if (textOpen) {
+      setTextOpen(false);
+      setMenuOpen(false);
+    } else setMenuOpen((open) => !open);
   }
 
   function chooseChat() {
