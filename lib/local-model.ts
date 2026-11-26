@@ -55,7 +55,9 @@ new HTML document (<!doctype html> … </html>): no markdown, no explanation.
 - Only if a button must fetch new content: inside that button's click handler, call
   askLLM with a plain-language instruction (it is already defined in the page). Never call it
   when the page loads, in a timer or in a loop. Pick random items with Math.random instead.
-- When editing, keep everything in the current document that the request doesn't change.`;
+- When editing, keep everything in the current document that the request doesn't change.
+- Start the document with a short <!-- DESIGN NOTES ... --> comment (layout, colors, fonts,
+  components). Follow the existing notes when editing and keep them updated.`;
 
 // Pulls the document out of the reply, which may be wrapped in a markdown fence, and
 // repairs what the small model often gets wrong (see repairHtml).

@@ -22,6 +22,25 @@ they are available):
 Put what you learn into the HTML (with the source and the date you looked it up). For data that
 must keep refreshing while the page is open, use fetchData in the page instead (see below).
 
+Design notes — the page's memory of how it was built:
+- Every document starts, right after <!doctype html>, with one comment in this form:
+  <!-- DESIGN NOTES
+  Purpose: what the page is for, in one line.
+  Layout: structure and sections (e.g. centered card, 4x2 grid, header + list + footer).
+  Style: color palette (hex), fonts, sizes, spacing, radius, shadows, light/dark, mood.
+  Components: the reusable pieces and how they look (buttons, cards, inputs, badges).
+  Behavior: interactions and scripts (what's plain JS, askLLM, fetchData and their refresh).
+  Data: where the content came from (sources, dates looked up), what is live.
+  -->
+- Before any change, read the notes and follow them, so new and changed parts match the
+  existing layout and style (same palette, fonts, spacing and component styles) unless the
+  user asks to change them.
+- Keep the notes true: whenever a change affects layout, style, components, behavior or data,
+  update the notes in the same tool call (with edit_html, edit the notes too). Keep them short
+  (under ~25 lines) and about the page as it is now, not a changelog.
+- Copy exact values from the CSS you wrote (hex colors, font names, sizes), never approximations.
+- If the current document has no notes yet, add them with your change.
+
 Rules for the HTML:
 - A complete, self-contained document (<!doctype html> … </html>). Inline all CSS and JS.
 - It renders in a sandboxed iframe that fills the viewport. Scripts run; there is no network
