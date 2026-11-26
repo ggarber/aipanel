@@ -294,7 +294,7 @@ export default function GenerativeUI({
         activity,
         fraction < 1
           ? `Downloading Gemini Nano into Chrome… ${Math.round(fraction * 100)}%`
-          : "Asking Gemini Nano (in this browser) to update the page…",
+          : "Asking Gemini Nano (in this browser, experimental) to update the page…",
       );
     };
     try {
