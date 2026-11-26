@@ -519,7 +519,24 @@ export default function GenerativeUI({
 
       <div ref={controlsRef} className="pointer-events-none fixed bottom-10 right-6 flex flex-col items-end gap-3">
         {(transcript || message || error) && (
-          <div className="game-bubble pointer-events-auto max-w-sm px-4 py-3 text-sm">
+          <div className="game-bubble pointer-events-auto relative max-w-sm py-3 pl-4 pr-9 text-sm">
+            <button
+              type="button"
+              onClick={() => {
+                // Hides the box; a running request carries on (the status line shows it) and its
+                // result opens the box again.
+                setTranscript("");
+                setMessage("");
+                setError("");
+              }}
+              aria-label="Close"
+              title="Close"
+              className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-sky-200 hover:bg-white/15 hover:text-white"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
             {transcript && (
               <p className="text-sky-100">
                 <span className="game-font text-amber-300">{requestSource === "panel" ? "Page: " : "You: "}</span>
