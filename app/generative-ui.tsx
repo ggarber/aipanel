@@ -220,7 +220,7 @@ export default function GenerativeUI({
           current.source === "local"
             ? await runLocal(trimmed, origin, activity)
             : own
-              ? await runOwnKey(trimmed, origin, own)
+              ? await runOwnKey(trimmed, origin, own, activity, model)
               : !serverLlm
                 ? { error: NO_SERVER_LLM }
                 : await submitRequest(trimmed, origin, code, getPanel(code)?.html ?? INITIAL_HTML).catch(() => ({
@@ -247,10 +247,22 @@ export default function GenerativeUI({
     text: string,
     origin: RequestOrigin,
     choice: NonNullable<ReturnType<typeof remoteChoice>>,
+    activity: number,
+    model: string,
   ): Promise<PanelResult> {
     const doc = getPanel(code) ?? { html: INITIAL_HTML, requests: [] };
+    // Show the agent's research steps in the status line.
+    const onTool = (name: "web_search" | "fetch_url", input: string) => {
+      let what = input;
+      if (name === "fetch_url") {
+        try {
+          what = new URL(input).hostname;
+        } catch {}
+      }
+      update(activity, name === "web_search" ? `${model}: searching the web for “${what.slice(0, 80)}”…` : `${model}: reading ${what}…`);
+    };
     try {
-      const result = await runWithOwnKey(choice, doc, text, origin);
+      const result = await runWithOwnKey(choice, doc, text, origin, onTool);
       if (!result.changed) return { message: result.message };
       const entry = historyEntry(text, origin);
       const saved = await savePanelContent(code, { html: result.html, requests: [...doc.requests, entry] }, entry);

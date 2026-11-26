@@ -8,11 +8,14 @@ import {
   buildPrompt,
   buildTools,
   historyEntry,
+  MAX_AGENT_STEPS,
   MAX_HTML_CHARS,
   SYSTEM,
   type RequestOrigin,
 } from "@/lib/genui";
 import { serverModel } from "@/lib/models";
+import { SERVER_MODEL } from "@/lib/model-settings";
+import { webSearch } from "@/lib/web-search";
 import { isPanelCode } from "@/lib/panel-code";
 import { MAX_PANEL_REQUESTS, MAX_REQUEST_CHARS, type PanelData } from "@/lib/panel-file";
 import type { PanelRecord } from "@/lib/panel-types";
@@ -137,8 +140,14 @@ export async function submitRequest(
       model,
       system: SYSTEM,
       prompt: buildPrompt(doc, text, origin),
-      tools: buildTools(doc),
-      stopWhen: isStepCount(8),
+      // Research tools run here too: search with the server's Gemini, pages through the
+      // address-checked fetcher (cached for 5 minutes like fetchData's).
+      tools: buildTools(doc, {
+        search: (query) => webSearch({ provider: "google", model: SERVER_MODEL }, query),
+        fetch: (url) => pageText(url).value,
+        onTool: (name, input) => console.info("agent %s %s: %s", c, name, input.slice(0, 200)),
+      }),
+      stopWhen: isStepCount(MAX_AGENT_STEPS),
       maxOutputTokens: 32000,
       providerOptions,
     });

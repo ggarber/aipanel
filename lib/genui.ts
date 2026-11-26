@@ -12,6 +12,16 @@ Your job is to change the screen to satisfy the request, using the tools:
   (recolor, rename, add an item, tweak layout) — it is faster and keeps everything else intact.
 - set_html: replace the whole document. Use it for a new screen or a substantial redesign.
 
+You work as an agent: you can call tools several times before answering. Research tools (when
+they are available):
+- web_search(query): searches the web and returns a short answer with source URLs. Use it when
+  the request needs facts you're not sure of or recent information (news, prices, schedules,
+  people, events). Search first, then build the page.
+- fetch_url(url): returns the text of a web page. Use it to read a page the user names or a
+  source from web_search.
+Put what you learn into the HTML (with the source and the date you looked it up). For data that
+must keep refreshing while the page is open, use fetchData in the page instead (see below).
+
 Rules for the HTML:
 - A complete, self-contained document (<!doctype html> … </html>). Inline all CSS and JS.
 - It renders in a sandboxed iframe that fills the viewport. Scripts run; there is no network
@@ -49,16 +59,62 @@ Error on failure.
     https://cdn.jsdelivr.net if a real chart library is needed). Show a loading state, the
     error message on failure (keep the last good data), the source and "updated hh:mm".
   - Never put data you didn't get from fetchData in the page as if it were live.
-- Without fetchData you have no live data. For real-time topics where the user gave no
-  source, give general or typical information and label it as not live, or offer a source.
+- Without web_search, fetch_url or fetchData you have no live data. For real-time topics you
+  couldn't look up, give general or typical information and label it as not live.
 
 Always call a tool to change the screen unless the request is unclear or impossible; then make
 no tool call and reply with one short sentence. After your tool calls, reply with one short
 sentence describing what changed.`;
 
-// Tools edit doc.html in place.
-export function buildTools(doc: { html: string }) {
+// The research tools' implementations differ between the server and the browser.
+export type AgentIO = {
+  search?: (query: string) => Promise<{ answer: string; sources: { title?: string; url: string }[] }>;
+  fetch?: (url: string) => Promise<{ url: string; text: string }>;
+  // Called when a research tool starts, for the status line.
+  onTool?: (name: "web_search" | "fetch_url", input: string) => void;
+};
+
+export const MAX_AGENT_STEPS = 12;
+const MAX_FETCH_CHARS = 12_000;
+
+function researchTools(io: AgentIO) {
   return {
+    ...(io.search && {
+      web_search: tool({
+        description: "Search the web. Returns a short answer with the facts found and the source URLs.",
+        inputSchema: z.object({ query: z.string().describe("What to search for.") }),
+        execute: async ({ query }) => {
+          io.onTool?.("web_search", query);
+          try {
+            return await io.search!(query);
+          } catch (err) {
+            return { error: err instanceof Error ? err.message : "Search failed." };
+          }
+        },
+      }),
+    }),
+    ...(io.fetch && {
+      fetch_url: tool({
+        description: "Fetch a public web page and return its text (tables kept as rows).",
+        inputSchema: z.object({ url: z.string().describe("The http(s) URL to read.") }),
+        execute: async ({ url }) => {
+          io.onTool?.("fetch_url", url);
+          try {
+            const page = await io.fetch!(url);
+            return { url: page.url, text: page.text.slice(0, MAX_FETCH_CHARS) };
+          } catch (err) {
+            return { error: err instanceof Error ? err.message : "Couldn't read that page." };
+          }
+        },
+      }),
+    }),
+  };
+}
+
+// Tools edit doc.html in place; io adds the research tools.
+export function buildTools(doc: { html: string }, io: AgentIO = {}) {
+  return {
+    ...researchTools(io),
     set_html: tool({
       description: "Replace the entire HTML document shown to the user.",
       inputSchema: z.object({
