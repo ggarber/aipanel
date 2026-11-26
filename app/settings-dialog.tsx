@@ -26,6 +26,7 @@ export default function SettingsDialog({
   onClose,
   panel,
   serverLlm,
+  onReset,
   onImport,
   onRevert,
 }: {
@@ -33,6 +34,7 @@ export default function SettingsDialog({
   onClose: () => void;
   panel: StoredPanel | null;
   serverLlm: boolean;
+  onReset: () => Promise<boolean>;
   onImport: (data: PanelData) => Promise<boolean>;
   onRevert: (version: number) => Promise<boolean>;
 }) {
@@ -86,6 +88,17 @@ export default function SettingsDialog({
       setPanelBusy(false);
       if (fileRef.current) fileRef.current.value = "";
     }
+  }
+
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  async function reset() {
+    if (!confirmReset) return setConfirmReset(true);
+    setPanelBusy(true);
+    const ok = await onReset();
+    setPanelBusy(false);
+    if (ok) onClose();
+    else setPanelStatus({ text: "Couldn’t reset the panel.", error: true });
   }
 
   async function revert(version: number) {
@@ -227,9 +240,10 @@ export default function SettingsDialog({
           <h3 className="game-outline text-lg">Panel</h3>
           <p className="text-xs text-sky-100">
             Export saves the current page and its request history to a file. Import replaces the current panel with
-            one from a file (an export, or a plain .html page).
+            one from a file (an export, or a plain .html page). Reset goes back to the empty welcome page (undo it from
+            Versions).
           </p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={doExport}
@@ -245,6 +259,15 @@ export default function SettingsDialog({
               className="game-btn game-btn-blue game-btn-sm"
             >
               Import…
+            </button>
+            <button
+              type="button"
+              onClick={reset}
+              onBlur={() => setConfirmReset(false)}
+              disabled={panelBusy}
+              className="game-btn game-btn-red game-btn-sm"
+            >
+              {confirmReset ? "Reset page?" : "Reset"}
             </button>
             <input
               ref={fileRef}

@@ -82,6 +82,7 @@ When nothing is running, it shows the last outcome with its time: how long a cal
 Settings → Panel:
 - **Export** downloads `aipanel-<CODE>-<date>.json`: `{"format": "aipanel", "version": 1, "exportedAt", "html", "requests", "code", "panelVersion"}` (`lib/panel-file.ts`).
 - **Import** saves an export file, or a plain `.html` page (imported with no history), as the open panel's next version on the server.
+- **Reset** (two clicks: "Reset page?") goes back to the empty welcome page, saved as a new version, so Versions can undo it. It lives here rather than next to the edit button, to keep it out of reach of a stray click.
 
 ## How it works
 
