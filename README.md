@@ -8,7 +8,7 @@ A voice-driven generative UI. Use the edit button (bottom right) to describe a s
 ## Run
 
 ```bash
-cp .env.example .env.local   # add GOOGLE_GENERATIVE_AI_API_KEY and APP_PASSWORD
+cp .env.example .env.local   # add GOOGLE_GENERATIVE_AI_API_KEY (and DATABASE_URL to use Postgres)
 npm run dev
 ```
 
@@ -23,7 +23,7 @@ Open http://localhost:3000 in Chrome, Edge or Safari. These browsers support the
 - **Storage:** the server database (Neon Postgres, `lib/panels-db.ts`) is the source of truth for each panel and its last 5 versions. The browser keeps a cached copy (`lib/panel-store.ts`, `localStorage`) and shows it immediately, then asks the server and takes its copy only if the version is newer. If the server can't be reached, the cached copy stays on screen marked "offline (cached)".
 - **Versions:** every save on the server bumps `version`, records a `note` (the request, "Reset", "Imported", "Reverted to v3"…) and moves the previous version into `history`, keeping 5. Settings → Versions lists them with dates and offers **Revert**, which saves the old page as a new version so it can be undone.
 - Panels made before the database existed only live in the browser that made them. Opening one offers **Save to server**.
-- The password gate (`APP_PASSWORD`) still protects every page. After signing in you return to the panel you were opening.
+- **No sign-in: the panel code is the access.** Anyone who knows a code can open and change that panel, so pick codes that are hard to guess (🎲). The server's own model (and its Gemini key) is only used for panels whose `server_llm` flag is on. Everything else runs in the visitor's browser or on their own key.
 
 ### Database
 
@@ -82,4 +82,3 @@ Settings → Panel:
 - Live data: generated pages call the injected `fetchData(url, instruction)`, which the page can run on load and on a timer. The main page passes it to the `extractData` server action. `lib/crawl.ts` downloads the page (public http(s) hosts only, 10 s timeout, 3 MB cap) and reduces it to text with table rows kept. `lib/extract.ts` then has the selected model return JSON (`Output.json()`). The page renders that JSON itself. Results are cached for 5 minutes per URL + instruction, and each session gets 30 requests per 10 minutes. Sites that build their content with client-side JavaScript have no data in their HTML and won't work.
 - `lib/panels-db.ts` (server): panels in Postgres; see [Database](#database). `openPanel(code, knownVersion)` checks a code and returns the panel (or `current` / `missing`) together with `serverLlm`. `savePanelContent` stores a page made in the browser (local model, your own key, Import, Reset) and creates the panel on its first change. `submitRequest(text, origin, code)` runs the server's model when the flag allows it. `revertPanel` restores an old version. `extractData` (server model) and `fetchPageText` (page text only) serve `fetchData`.
 - `lib/panel-store.ts` (browser): the `localStorage` cache of server records. `cachePanel` only stores a copy whose version is newer than the cached one.
-- `lib/auth.ts`: a password gate. The page and server actions require a cookie that is set after entering `APP_PASSWORD`.

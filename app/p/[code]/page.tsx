@@ -1,8 +1,6 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { isAuthenticated } from "@/lib/auth";
 import { isPanelCode, normalizeCode } from "@/lib/panel-code";
-import LoginForm from "../../login-form";
 import PanelView from "../../panel-view";
 
 async function Gate({ params }: { params: Promise<{ code: string }> }) {
@@ -10,7 +8,6 @@ async function Gate({ params }: { params: Promise<{ code: string }> }) {
   const code = normalizeCode(decodeURIComponent(raw));
   if (!isPanelCode(code)) redirect("/");
   if (code !== raw) redirect(`/p/${code}`);
-  if (!(await isAuthenticated())) return <LoginForm next={`/p/${code}`} />;
   return <PanelView code={code} />;
 }
 
