@@ -497,8 +497,9 @@ export default function GenerativeUI({
     return true;
   }
 
+  // Back to the welcome page, as a new version (so it can be undone from Versions).
   function reset() {
-    void saveOnServer(
+    return saveOnServer(
       "Resetting the panel",
       () => savePanelContent(code, { html: INITIAL_HTML, requests: [] }, "Reset"),
       "Panel reset",
@@ -602,13 +603,6 @@ export default function GenerativeUI({
             </svg>
           </button>
           <button
-            onClick={reset}
-            disabled={isPending}
-            className="game-icon-btn"
-          >
-            Reset
-          </button>
-          <button
             onClick={onMainClick}
             onPointerDown={onMainPointerDown}
             onPointerUp={onMainPointerUp}
@@ -659,6 +653,7 @@ export default function GenerativeUI({
           onClose={() => setSettingsOpen(false)}
           panel={panel}
           serverLlm={serverLlm}
+          onReset={reset}
           onImport={(imported) =>
             saveOnServer("Importing the panel", () => savePanelContent(code, imported, "Imported"), "Panel imported")
           }
