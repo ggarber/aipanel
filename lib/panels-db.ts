@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
-import { MAX_HISTORY, type PanelRecord, type PanelVersion } from "./panel-types";
+import { MAX_HISTORY, type PanelContent, type PanelRecord, type PanelVersion } from "./panel-types";
 
 // Panels in Postgres (Neon), one row per panel:
 //   id       uuid, generated, primary key
@@ -212,10 +212,20 @@ function fit(record: PanelRecord): PanelRecord {
   return r;
 }
 
+// The stored fields of a change: Classic content gets no agent/parts keys at all, so Classic
+// records stay exactly as they were.
+function content(change: PanelContent): PanelContent {
+  return {
+    html: change.html,
+    requests: change.requests,
+    ...(change.agent === "structured" && change.parts && { agent: "structured" as const, parts: change.parts }),
+  };
+}
+
 // Stores a new panel as version 1; null when the code was taken in the meantime.
 async function createPanel(
   code: string,
-  change: { html: string; requests: string[] },
+  change: PanelContent,
   note: string,
 ): Promise<PanelRecord | null> {
   const id = randomUUID();
@@ -226,8 +236,7 @@ async function createPanel(
     id,
     code,
     version: 1,
-    html: change.html,
-    requests: change.requests,
+    ...content(change),
     note: note.slice(0, 200),
     createdAt: now,
     updatedAt: now,
@@ -243,7 +252,7 @@ async function createPanel(
 // saves each get their own version.
 export async function savePanel(
   code: string,
-  change: { html: string; requests: string[] },
+  change: PanelContent,
   note: string,
 ): Promise<PanelRecord> {
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -255,16 +264,18 @@ export async function savePanel(
     }
     const previous: PanelVersion = {
       version: current.version,
-      html: current.html,
-      requests: current.requests,
+      ...content(current),
       note: current.note,
       savedAt: current.updatedAt,
     };
+    // The new content decides the agent: a Classic save drops the parts.
+    const base: PanelRecord = { ...current };
+    delete base.agent;
+    delete base.parts;
     const next = fit({
-      ...current,
+      ...base,
       version: current.version + 1,
-      html: change.html,
-      requests: change.requests,
+      ...content(change),
       note: note.slice(0, 200),
       updatedAt: new Date().toISOString(),
       history: [previous, ...current.history].slice(0, MAX_HISTORY),

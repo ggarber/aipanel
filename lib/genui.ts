@@ -112,7 +112,7 @@ export type AgentIO = {
 export const MAX_AGENT_STEPS = 12;
 const MAX_FETCH_CHARS = 12_000;
 
-function researchTools(io: AgentIO) {
+export function researchTools(io: AgentIO) {
   return {
     ...(io.search && {
       web_search: tool({
@@ -197,6 +197,14 @@ export function buildPrompt(
   text: string,
   origin: RequestOrigin,
 ): string {
+  const previous = doc.requests.length
+    ? `Earlier requests (oldest first):\n${doc.requests.map((r) => `- ${r}`).join("\n")}\n\n`
+    : "";
+  return `${previous}Current HTML document:\n<current_html>\n${doc.html}\n</current_html>\n\n${describeRequest(text, origin)}`;
+}
+
+// The request part of the prompt, shared with the Structured agent.
+export function describeRequest(text: string, origin: RequestOrigin): string {
   let contextJson = "";
   if (origin.source === "panel" && origin.context !== undefined) {
     try {
@@ -205,15 +213,10 @@ export function buildPrompt(
       contextJson = "";
     }
   }
-  const requestBlock =
-    origin.source === "panel"
-      ? `Request from the page via askLLM() (the user clicked something in the current UI):\n<request>${text}</request>` +
+  return origin.source === "panel"
+    ? `Request from the page via askLLM() (the user clicked something in the current UI):\n<request>${text}</request>` +
         (contextJson ? `\n<context>${contextJson}</context>` : "")
-      : `User request (speech transcript):\n<request>${text}</request>`;
-  const previous = doc.requests.length
-    ? `Earlier requests (oldest first):\n${doc.requests.map((r) => `- ${r}`).join("\n")}\n\n`
-    : "";
-  return `${previous}Current HTML document:\n<current_html>\n${doc.html}\n</current_html>\n\n${requestBlock}`;
+    : `User request (speech transcript):\n<request>${text}</request>`;
 }
 
 // How a request is stored in the session history.

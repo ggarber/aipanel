@@ -54,6 +54,26 @@ The gear button opens Settings. The choice is saved in this browser.
 - **Gemini / OpenAI / Anthropic with your own key:** the key and model name are stored in this browser's `localStorage`. Requests go **straight from the browser to the provider** (`lib/browser-llm.ts`; Anthropic gets its `anthropic-dangerous-direct-browser-access` header), and only the resulting page is sent to the server to store. The key never reaches the server. For `fetchData`, the server only downloads the page (`fetchPageText`), because browsers can't read other sites, and the extraction runs in the browser with your key.
 - **In this browser:** Chrome's built-in Gemini Nano via the [Prompt API](https://developer.chrome.com/docs/ai/prompt-api). It needs a recent desktop Chrome, and Chrome downloads the model (a few GB) on first use. The model runs in the page with a short prompt of its own (`lib/local-model.ts`), because its context window is about 9k tokens and it handles neither tools nor long JSON well. It returns the whole new document as plain HTML. Before saving, inline `<script>`s are moved to the end of `<body>`, because Nano often puts them in `<head>`, where they run before the page exists. A reply cut off before `</html>` is closed rather than rejected. **Experimental and very inaccurate:** expect simple, often wrong or half-finished pages; use a remote model for anything that matters. The Settings dialog says so too.
 
+## Agents: Classic and Structured
+
+Two agents can edit a panel, chosen per panel in Settings → Agent:
+
+- **Classic:** the page is one HTML document, changed with `set_html` (rewrite) and `edit_html` (find/replace), with design notes in a comment at the top (`lib/genui.ts`). Every panel made before the Structured agent uses it, unchanged.
+- **Structured** (the default for new panels): the page is kept as three JSON parts (`lib/structured.ts`):
+  - `instructions`: purpose, layout, style, components, behavior, data. These replace the design notes.
+  - `style`: `tokens` (CSS custom properties, rendered into `:root`), `rules` (`{selector: {property: value}}`, nested for `@media` and `@keyframes`) and an optional raw `css` string.
+  - `structure`: `title`, `lang`, `head` nodes, `bodyAttrs`, `body` (a tree of `{tag, id, class, attrs, text, children}` nodes, or `{html}` for raw markup) and `scripts` (inline code, or `{src}`), which run at the end of `<body>`.
+
+  The agent edits them with **`read_file(path?)`** and **`write_file(path?, content)`**, plus `web_search` and `fetch_url`. A path is `/`-separated keys and array indexes: `style/tokens/--accent`, `structure/body/0/children/2`. `-` as the last segment appends, `~1` stands for a `/` inside a key, and an empty path means all three parts. `content` is JSON, or plain text for a string. **Empty content deletes the path.** The prompt holds the whole page when it is under 30k characters, otherwise instructions, style and an outline of the structure, which the agent then reads as needed.
+
+A Structured page is rendered to HTML (`renderParts`) and shown in the same sandboxed iframe, so `askLLM`, `fetchData`, saved state, Versions and Export work the same. The server renders the HTML itself from the parts it receives. The record keeps `html` (the rendered page) next to `agent: "structured"` and `parts`, and Classic records don't have those two fields.
+
+**Switching agents** converts the page once and saves it as a new version, so Versions can undo it:
+- Classic → Structured: `<style>` blocks go to `style.css`, the body to one raw node, scripts in order to `scripts`, and the design notes to `instructions`.
+- Structured → Classic: the page keeps its rendered HTML, which carries the instructions as design notes.
+
+Gemini Nano always writes plain HTML, so on a Structured panel its page is stored converted the same way. Imports take the open panel's agent.
+
 ## Saved state
 
 Generated pages can keep their own data on the server, per panel, so it survives reloads and follows the panel to other devices (tasks, calendars, stats…). Injected into every page, each returning a Promise:
@@ -73,8 +93,8 @@ Every generated page starts with a `<!-- DESIGN NOTES … -->` comment: Purpose,
 
 ## Agent tools
 
-Requests to the server's model and to your own key run as an agent: a loop of up to 12 model steps (`MAX_AGENT_STEPS`) that can call these tools (`lib/genui.ts`):
-- **`set_html` / `edit_html`:** change the page.
+Requests to the server's model and to your own key run as an agent: a loop of up to 12 model steps (`MAX_AGENT_STEPS`) that can call these tools (`lib/genui.ts`, `lib/structured.ts`):
+- **`set_html` / `edit_html`** (Classic) or **`read_file` / `write_file`** (Structured; see [Agents](#agents-classic-and-structured)): change the page.
 - **`web_search(query)`:** a separate call to the same model with the provider's own search tool (`lib/web-search.ts`): Google Search grounding for Gemini, OpenAI's and Anthropic's web search. Returns a short answer and source URLs.
 - **`fetch_url(url)`:** the text of a public page, from the server's address-checked fetcher (`lib/crawl.ts`, cached for 5 minutes). From the browser it goes through the `fetchPageText` server action, since browsers can't read other sites.
 
@@ -87,7 +107,7 @@ There is no status bar. While a request runs, the message box shows what is happ
 ## Export and import
 
 Settings → Panel:
-- **Export** downloads `aipanel-<CODE>-<date>.json`: `{"format": "aipanel", "version": 1, "exportedAt", "html", "requests", "code", "panelVersion"}` (`lib/panel-file.ts`).
+- **Export** downloads `aipanel-<CODE>-<date>.json`: `{"format": "aipanel", "version": 1, "exportedAt", "html", "requests", "code", "panelVersion"}`, plus `agent` and `parts` for a Structured page (`lib/panel-file.ts`).
 - **Import** saves an export file, or a plain `.html` page (imported with no history), as the open panel's next version on the server.
 - **Reset** (two clicks: "Reset page?") goes back to the empty welcome page, saved as a new version, so Versions can undo it. It lives here rather than next to the edit button, to keep it out of reach of a stray click.
 
