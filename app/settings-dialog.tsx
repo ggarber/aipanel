@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { panelFileName, parsePanelFile, toPanelFile, type PanelData } from "@/lib/panel-file";
 import { panelTitle, type StoredPanel } from "@/lib/panel-store";
@@ -26,6 +27,9 @@ export default function SettingsDialog({
   onClose,
   panel,
   serverLlm,
+  code,
+  versionLabel,
+  offline,
   onReset,
   onImport,
   onRevert,
@@ -34,6 +38,9 @@ export default function SettingsDialog({
   onClose: () => void;
   panel: StoredPanel | null;
   serverLlm: boolean;
+  code: string;
+  versionLabel: string;
+  offline: boolean;
   onReset: () => Promise<boolean>;
   onImport: (data: PanelData) => Promise<boolean>;
   onRevert: (version: number) => Promise<boolean>;
@@ -129,6 +136,15 @@ export default function SettingsDialog({
         className="game-dialog game-pop max-h-[calc(100dvh-2rem)] w-full max-w-md space-y-4 overflow-y-auto p-6 text-sm"
       >
         <h2 id="settings-title" className="game-title text-center text-4xl">Settings</h2>
+        <div className="flex items-center justify-between gap-2">
+          <span className="game-code-chip text-sm">
+            {code} · {versionLabel}
+          </span>
+          {offline && <span className="text-xs font-semibold text-red-200">Offline: showing the cached copy</span>}
+          <Link href="/" className="game-btn game-btn-blue game-btn-sm">
+            Home
+          </Link>
+        </div>
 
         <fieldset className="space-y-2">
           <legend className="game-outline mb-2 text-lg">Model</legend>

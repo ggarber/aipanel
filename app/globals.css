@@ -238,12 +238,6 @@ body {
 .game-input:focus { outline: none; box-shadow: inset 0 3px 0 rgb(14 34 87 / 0.12), 0 3px 0 #0e2257, 0 0 0 4px #ffd84a; }
 .game-input::placeholder { color: #6b7ba6; font-weight: 500; }
 
-.game-statusbar {
-  background: linear-gradient(#142554, #0a1430);
-  border-top: 2px solid #ffc21a;
-  color: #dbe7ff;
-}
-
 .game-dialog {
   color: #fff;
   background: linear-gradient(#2f6fe0, #1d4fb5);

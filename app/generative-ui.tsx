@@ -1,7 +1,6 @@
 "use client";
 
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore, useTransition } from "react";
-import Link from "next/link";
 import {
   extractData,
   fetchPageText,
@@ -27,7 +26,7 @@ import {
   remoteChoice,
   subscribeSettings,
 } from "@/lib/model-settings";
-import StatusBar, { seconds, useActivities } from "./status-bar";
+import { seconds, useActivities } from "./activities";
 import SettingsDialog from "./settings-dialog";
 
 // Minimal Web Speech API typings (not in lib.dom for all TS versions).
@@ -176,7 +175,7 @@ export default function GenerativeUI({
     () => true,
   );
   const [isPending, startTransition] = useTransition();
-  const { activities, last, begin, update, end, note } = useActivities();
+  const { activities, begin, update, end } = useActivities();
 
   const [requestSource, setRequestSource] = useState<RequestOrigin["source"]>("voice");
 
@@ -369,7 +368,7 @@ export default function GenerativeUI({
           .catch(() => ({ error: "Couldn't reach the server." }))
           .then((result) => {
             frame.postMessage({ type: "genui:state:result", id, ...result }, "*");
-            if (result.error) note(`Saved state: ${result.error}`, true);
+            if (result.error) setError(`Saved state: ${result.error}`);
           });
         return;
       }
@@ -415,7 +414,7 @@ export default function GenerativeUI({
     window.addEventListener("message", onMessage);
     signalReady();
     return () => window.removeEventListener("message", onMessage);
-  }, [begin, end, note, code]);
+  }, [begin, end, code]);
 
   // Tells the page's bridge that messages can flow; also sent on every iframe (re)load.
   function signalReady() {
@@ -550,10 +549,10 @@ export default function GenerativeUI({
         title="Generated UI"
         srcDoc={withBridge(html)}
         sandbox="allow-scripts allow-forms allow-modals allow-popups"
-        className={`h-[calc(100%-1.75rem)] w-full border-0 transition-opacity ${isPending ? "opacity-60" : ""}`}
+        className={`h-full w-full border-0 transition-opacity ${isPending ? "opacity-60" : ""}`}
       />
 
-      <div ref={controlsRef} className="pointer-events-none fixed bottom-10 right-6 flex flex-col items-end gap-3">
+      <div ref={controlsRef} className="pointer-events-none fixed bottom-6 right-6 flex flex-col items-end gap-3">
         {(transcript || message || error) && (
           <div className="game-bubble pointer-events-auto relative max-w-sm py-3 pl-4 pr-9 text-sm">
             <button
@@ -583,7 +582,7 @@ export default function GenerativeUI({
               <p className="mt-1 animate-pulse text-sky-200">
                 {download !== null && download < 1
                   ? `Downloading the built-in model… ${Math.round(download * 100)}%`
-                  : "Updating the UI…"}
+                  : (activities[activities.length - 1]?.text ?? "Updating the UI…")}
               </p>
             )}
             {message && status !== "thinking" && <p className="mt-1">{message}</p>}
@@ -684,21 +683,6 @@ export default function GenerativeUI({
           </button>
         </div>
       </div>
-      <StatusBar
-        activities={activities}
-        last={last}
-        model={describeModel(settings)}
-        panel={
-          <Link
-            href="/"
-            title={offline ? "Server unreachable: showing the copy cached in this browser" : "Back to your panels"}
-            className="game-code-chip text-xs hover:brightness-110"
-          >
-            {code} · {isNew && !panel ? "new" : `v${panel?.version ?? 0}`}
-            {offline && <span className="text-red-300"> · offline (cached)</span>}
-          </Link>
-        }
-      />
 
       {settingsOpen && (
         <SettingsDialog
@@ -706,6 +690,9 @@ export default function GenerativeUI({
           onClose={() => setSettingsOpen(false)}
           panel={panel}
           serverLlm={serverLlm}
+          code={code}
+          versionLabel={isNew && !panel ? "new" : `v${panel?.version ?? 0}`}
+          offline={offline}
           onReset={reset}
           onImport={(imported) =>
             saveOnServer("Importing the panel", () => savePanelContent(code, imported, "Imported"), "Panel imported")

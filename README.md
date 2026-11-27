@@ -78,17 +78,11 @@ Requests to the server's model and to your own key run as an agent: a loop of up
 - **`web_search(query)`:** a separate call to the same model with the provider's own search tool (`lib/web-search.ts`): Google Search grounding for Gemini, OpenAI's and Anthropic's web search. Returns a short answer and source URLs.
 - **`fetch_url(url)`:** the text of a public page, from the server's address-checked fetcher (`lib/crawl.ts`, cached for 5 minutes). From the browser it goes through the `fetchPageText` server action, since browsers can't read other sites.
 
-On the server, each research step is logged as `agent <CODE> web_search|fetch_url: …`. In the browser, the status line shows "searching the web for …" / "reading example.com…". Gemini Nano in the browser has no tool calling, so it stays single-shot.
+On the server, each research step is logged as `agent <CODE> web_search|fetch_url: …`. In the browser, the message box shows "searching the web for …" / "reading example.com…". Gemini Nano in the browser has no tool calling, so it stays single-shot.
 
-## Status line
+## Progress and panel info
 
-A bar along the bottom (`app/status-bar.tsx`) shows what is running right now, with a live timer:
-- an LLM call, with the model and where it runs (server Gemini, your own key, or Gemini Nano in the browser);
-- the Gemini Nano download progress;
-- `fetchData` refreshes, with the site and the model reading it;
-- listening and Reset.
-
-When nothing is running, it shows the last outcome with its time: how long a call took, "cached" for data under 5 minutes old, or the error. The current model is always shown on the right.
+There is no status bar. While a request runs, the message box shows what is happening: the model and where it runs ("Asking Gemini … (your key, from this browser)…"), research steps ("searching the web for …", "reading example.com…"), and the Gemini Nano download progress. Settings shows the panel code and version (and "offline" when the server can't be reached), with a **Home** button.
 
 ## Export and import
 
