@@ -7,13 +7,23 @@ import {
   panelState,
   revertPanel,
   savePanelContent,
+  setPanelAgent,
   submitRequest,
   type ExtractResult,
   type PanelResult,
   type RequestOrigin,
 } from "./actions";
-import { extractWithOwnKey, runWithOwnKey } from "@/lib/browser-llm";
+import { extractWithOwnKey, runStructuredWithOwnKey, runWithOwnKey } from "@/lib/browser-llm";
 import { INITIAL_HTML } from "@/lib/initial-html";
+import { agentOf, type PanelContent } from "@/lib/panel-types";
+import {
+  AGENT_LABELS,
+  DEFAULT_AGENT,
+  INITIAL_PARTS,
+  INITIAL_STRUCTURED_HTML,
+  partsFromHtml,
+  type PanelAgent,
+} from "@/lib/structured";
 import { cachePanel, getPanel, subscribePanels } from "@/lib/panel-store";
 import { historyEntry } from "@/lib/genui";
 import { runLocalModel } from "@/lib/local-model";
@@ -126,6 +136,15 @@ const MAX_FETCHES_IN_FLIGHT = 4;
 const NO_SERVER_LLM =
   "This panel can't use the server's model. Pick your own key or the in-browser model in Settings.";
 
+// Content for a panel edited by `agent`: a Structured page from HTML (Gemini Nano's output,
+// an imported .html or Classic export) is wrapped into the three parts. The server renders
+// the HTML of Structured pages itself.
+function contentFor(agent: PanelAgent, data: PanelContent): PanelContent {
+  if (agent === "classic") return { html: data.html, requests: data.requests };
+  if (data.agent === "structured" && data.parts) return { html: "", requests: data.requests, agent, parts: data.parts };
+  return { html: "", requests: data.requests, agent, parts: partsFromHtml(data.html) };
+}
+
 function withBridge(html: string): string {
   const head = /<head[^>]*>/i.exec(html);
   if (head) {
@@ -156,7 +175,13 @@ export default function GenerativeUI({
   // The page shown is always the newest stored version of this panel, so saves from this
   // tab or another one show up here, and an older copy never replaces a newer one.
   const panel = useSyncExternalStore(subscribePanels, () => getPanel(code), () => null);
-  const html = panel?.html ?? INITIAL_HTML;
+  // A saved panel keeps the agent it was made with (Classic for every panel from before the
+  // Structured agent); a new code uses newAgent (Structured unless changed in Settings) and
+  // its first save stores it.
+  const [newAgent, setNewAgent] = useState<PanelAgent>(DEFAULT_AGENT);
+  const agent: PanelAgent = panel ? agentOf(panel) : newAgent;
+  const startHtml = agent === "structured" ? INITIAL_STRUCTURED_HTML : INITIAL_HTML;
+  const html = panel?.html ?? startHtml;
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [message, setMessage] = useState("");
@@ -241,7 +266,7 @@ export default function GenerativeUI({
               ? await runOwnKey(trimmed, origin, own, activity, model)
               : !serverLlm
                 ? { error: NO_SERVER_LLM }
-                : await submitRequest(trimmed, origin, code, getPanel(code)?.html ?? INITIAL_HTML).catch(() => ({
+                : await submitRequest(trimmed, origin, code, getPanel(code)?.html ?? INITIAL_HTML, agent).catch(() => ({
                     error: "Couldn't reach the server.",
                   }));
         if (result.panel) cachePanel(result.panel);
@@ -268,7 +293,8 @@ export default function GenerativeUI({
     activity: number,
     model: string,
   ): Promise<PanelResult> {
-    const doc = getPanel(code) ?? { html: INITIAL_HTML, requests: [] };
+    const stored = getPanel(code);
+    const doc = stored ?? { html: INITIAL_HTML, requests: [] };
     // Show the agent's research steps in the status line.
     const onTool = (name: "web_search" | "fetch_url", input: string) => {
       let what = input;
@@ -280,6 +306,19 @@ export default function GenerativeUI({
       update(activity, name === "web_search" ? `${model}: searching the web for “${what.slice(0, 80)}”…` : `${model}: reading ${what}…`);
     };
     try {
+      if (agent === "structured") {
+        const parts = stored?.parts ?? (stored ? partsFromHtml(stored.html) : INITIAL_PARTS);
+        const requests = stored?.requests ?? [];
+        const result = await runStructuredWithOwnKey(choice, { parts, requests }, text, origin, onTool);
+        if (!result.changed) return { message: result.message };
+        const entry = historyEntry(text, origin);
+        const saved = await savePanelContent(
+          code,
+          { html: "", requests: [...requests, entry], agent: "structured", parts: result.parts },
+          entry,
+        );
+        return { ...saved, message: result.message };
+      }
       const result = await runWithOwnKey(choice, doc, text, origin, onTool);
       if (!result.changed) return { message: result.message };
       const entry = historyEntry(text, origin);
@@ -317,7 +356,7 @@ export default function GenerativeUI({
 
   // Gemini Nano makes the page here; the server stores it as the next version.
   async function runLocal(text: string, origin: RequestOrigin, activity: number): Promise<PanelResult> {
-    const doc = getPanel(code) ?? { html: INITIAL_HTML, requests: [] };
+    const doc = getPanel(code) ?? { html: startHtml, requests: [] };
     const onProgress = (fraction: number) => {
       setDownload(fraction);
       update(
@@ -328,9 +367,12 @@ export default function GenerativeUI({
       );
     };
     try {
-      const result = await runLocalModel({ ...doc, fresh: doc.html === INITIAL_HTML }, text, origin, onProgress);
+      const fresh = doc.html === INITIAL_HTML || doc.html === INITIAL_STRUCTURED_HTML;
+      const result = await runLocalModel({ ...doc, fresh }, text, origin, onProgress);
       const entry = historyEntry(text, origin);
-      const saved = await savePanelContent(code, { html: result.html, requests: [...doc.requests, entry] }, entry);
+      // Nano writes HTML; a Structured panel stores it wrapped into the three parts.
+      const content = contentFor(agent, { html: result.html, requests: [...doc.requests, entry] });
+      const saved = await savePanelContent(code, content, entry);
       return { ...saved, message: result.message };
     } catch (err) {
       return { error: err instanceof Error ? err.message : "The built-in model failed." };
@@ -536,8 +578,29 @@ export default function GenerativeUI({
   function reset() {
     return saveOnServer(
       "Resetting the panel",
-      () => savePanelContent(code, { html: INITIAL_HTML, requests: [] }, "Reset"),
+      () =>
+        savePanelContent(
+          code,
+          agent === "structured"
+            ? { html: "", requests: [], agent, parts: INITIAL_PARTS }
+            : { html: INITIAL_HTML, requests: [] },
+          "Reset",
+        ),
       "Panel reset",
+    );
+  }
+
+  // A saved panel is converted on the server as a new version; a new one just starts with it.
+  async function changeAgent(next: PanelAgent): Promise<boolean> {
+    if (next === agent) return true;
+    if (!getPanel(code)) {
+      setNewAgent(next);
+      return true;
+    }
+    return saveOnServer(
+      `Switching to the ${AGENT_LABELS[next]} agent`,
+      () => setPanelAgent(code, next),
+      `Now edited by the ${AGENT_LABELS[next]} agent`,
     );
   }
 
@@ -693,9 +756,15 @@ export default function GenerativeUI({
           code={code}
           versionLabel={isNew && !panel ? "new" : `v${panel?.version ?? 0}`}
           offline={offline}
+          agent={agent}
+          onAgentChange={changeAgent}
           onReset={reset}
           onImport={(imported) =>
-            saveOnServer("Importing the panel", () => savePanelContent(code, imported, "Imported"), "Panel imported")
+            saveOnServer(
+              "Importing the panel",
+              () => savePanelContent(code, contentFor(agent, imported), "Imported"),
+              "Panel imported",
+            )
           }
           onRevert={(version) =>
             saveOnServer(`Reverting to v${version}`, () => revertPanel(code, version), `Reverted to v${version}`)

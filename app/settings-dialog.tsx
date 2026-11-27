@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { panelFileName, parsePanelFile, toPanelFile, type PanelData } from "@/lib/panel-file";
 import { panelTitle, type StoredPanel } from "@/lib/panel-store";
 import { localAvailability } from "@/lib/local-model";
+import { AGENT_LABELS, type PanelAgent } from "@/lib/structured";
 import {
   PROVIDER_IDS,
   PROVIDERS,
@@ -30,6 +31,8 @@ export default function SettingsDialog({
   code,
   versionLabel,
   offline,
+  agent,
+  onAgentChange,
   onReset,
   onImport,
   onRevert,
@@ -41,11 +44,14 @@ export default function SettingsDialog({
   code: string;
   versionLabel: string;
   offline: boolean;
+  agent: PanelAgent;
+  onAgentChange: (agent: PanelAgent) => Promise<boolean>;
   onReset: () => Promise<boolean>;
   onImport: (data: PanelData) => Promise<boolean>;
   onRevert: (version: number) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState(settings);
+  const [agentDraft, setAgentDraft] = useState(agent);
   const provider = isProviderId(draft.source) ? draft.source : null;
   const [local, setLocal] = useState<string>("checking");
 
@@ -66,7 +72,11 @@ export default function SettingsDialog({
     setPanelStatus(null);
     try {
       if (!panel) throw new Error("Nothing to export yet.");
-      const file = { ...toPanelFile({ html: panel.html, requests: panel.requests }), code: panel.code, panelVersion: panel.version };
+      const data: PanelData =
+        panel.agent === "structured" && panel.parts
+          ? { html: panel.html, requests: panel.requests, agent: panel.agent, parts: panel.parts }
+          : { html: panel.html, requests: panel.requests };
+      const file = { ...toPanelFile(data), code: panel.code, panelVersion: panel.version };
       const url = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: "application/json" }));
       const a = document.createElement("a");
       a.href = url;
@@ -116,9 +126,15 @@ export default function SettingsDialog({
     else setPanelStatus({ text: `Couldn't revert to v${version}.`, error: true });
   }
 
-  function save(e: React.FormEvent) {
+  async function save(e: React.FormEvent) {
     e.preventDefault();
     saveSettings(draft);
+    if (agentDraft !== agent) {
+      setPanelBusy(true);
+      const ok = await onAgentChange(agentDraft);
+      setPanelBusy(false);
+      if (!ok) return setPanelStatus({ text: `Couldn't switch to the ${AGENT_LABELS[agentDraft]} agent.`, error: true });
+    }
     onClose();
   }
 
@@ -209,12 +225,44 @@ export default function SettingsDialog({
           </div>
         )}
 
+        <div className="border-t-2 border-[#0e2257]/40 pt-4">
+          <fieldset className="space-y-2">
+            <legend className="game-outline mb-2 text-lg">Agent</legend>
+            {(["structured", "classic"] as PanelAgent[]).map((a) => (
+              <label key={a} className="flex cursor-pointer items-start gap-2 font-semibold">
+                <input
+                  type="radio"
+                  name="agent"
+                  value={a}
+                  checked={agentDraft === a}
+                  onChange={() => setAgentDraft(a)}
+                  className="mt-1"
+                />
+                <span>
+                  {AGENT_LABELS[a]}
+                  <span className="block text-xs font-normal text-sky-100">
+                    {a === "structured"
+                      ? "The page is kept as three JSON parts (instructions, style, structure) and the agent edits them path by path. Default for new panels."
+                      : "The page is one HTML document that the agent rewrites or edits by find and replace. Panels made before the Structured agent use it."}
+                  </span>
+                </span>
+              </label>
+            ))}
+            {agentDraft !== agent && panel && (
+              <p className="game-well p-3 text-xs text-sky-100">
+                Saving converts this page once, as a new version you can revert. Gemini Nano always writes plain HTML,
+                which a Structured panel stores as a single raw node.
+              </p>
+            )}
+          </fieldset>
+        </div>
+
         {panel && (
           <section className="space-y-2 border-t-2 border-[#0e2257]/40 pt-4">
             <h3 className="game-outline text-lg">Versions</h3>
             <ol className="game-well max-h-56 space-y-1 overflow-y-auto p-1.5">
               {[
-                { version: panel.version, html: panel.html, note: panel.note, savedAt: panel.updatedAt, current: true },
+                { version: panel.version, html: panel.html, agent: panel.agent, note: panel.note, savedAt: panel.updatedAt, current: true },
                 ...panel.history.map((v) => ({ ...v, current: false })),
               ].map((v) => (
                 <li key={v.version} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/10">
@@ -222,7 +270,11 @@ export default function SettingsDialog({
                   <span className="min-w-0 flex-1">
                     <span className="block truncate" title={v.note}>
                       {v.note || "—"}
-                      <span className="text-sky-200"> · {panelTitle(v.html)}</span>
+                      <span className="text-sky-200">
+                        {" "}
+                        · {panelTitle(v.html)}
+                        {v.agent === "structured" ? " · Structured" : ""}
+                      </span>
                     </span>
                     <time dateTime={v.savedAt} className="block text-xs text-sky-200">
                       {new Date(v.savedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}
@@ -308,7 +360,7 @@ export default function SettingsDialog({
           <button type="button" onClick={onClose} className="game-btn game-btn-blue game-btn-sm">
             Cancel
           </button>
-          <button type="submit" className="game-btn game-btn-green game-btn-sm">
+          <button type="submit" disabled={panelBusy} className="game-btn game-btn-green game-btn-sm">
             Save
           </button>
         </div>

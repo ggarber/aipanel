@@ -1,22 +1,35 @@
 // Shared by the server (database) and the browser (cache).
 
+import type { PageParts, PanelAgent } from "./structured";
+
+// Which agent edits a page, and its parts when that's the Structured one. html is always the
+// page shown (for Structured pages, the parts rendered), so everything that only shows pages
+// works for both. Classic pages have neither field: records saved before the Structured agent
+// existed are Classic.
+export type PanelContent = {
+  html: string;
+  requests: string[];
+  agent?: Exclude<PanelAgent, "classic">;
+  parts?: PageParts;
+};
+
+export function agentOf(content: { agent?: string } | null | undefined): PanelAgent {
+  return content?.agent === "structured" ? "structured" : "classic";
+}
+
 export const MAX_HISTORY = 5;
 
 // A saved state of the page. note says what made it ("a todo list", "Reset", "Imported"…).
-export type PanelVersion = {
+export type PanelVersion = PanelContent & {
   version: number;
-  html: string;
-  requests: string[];
   note: string;
   savedAt: string;
 };
 
-export type PanelRecord = {
+export type PanelRecord = PanelContent & {
   id: string; // generated, never changes
   code: string; // chosen by the user: 8 characters, A-Z and 0-9
   version: number;
-  html: string;
-  requests: string[];
   note: string;
   createdAt: string;
   updatedAt: string;

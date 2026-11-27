@@ -6,6 +6,7 @@ import { extractJson } from "./extract-core";
 import { fetchPageText } from "@/app/actions";
 import { buildPrompt, buildTools, MAX_AGENT_STEPS, SYSTEM, type AgentIO, type RequestOrigin } from "./genui";
 import { webSearch } from "./web-search";
+import { buildStructuredPrompt, buildStructuredTools, STRUCTURED_SYSTEM, type PageParts } from "./structured";
 import { createModel } from "./model-factory";
 import type { RemoteModelChoice } from "./model-settings";
 
@@ -39,6 +40,41 @@ export async function runWithOwnKey(
     providerOptions,
   });
   return { html: work.html, message: result.text, changed: work.html !== doc.html };
+}
+
+// The Structured agent with the user's key: same loop, editing the three JSON parts.
+export async function runStructuredWithOwnKey(
+  choice: RemoteModelChoice,
+  doc: { parts: PageParts; requests: string[] },
+  text: string,
+  origin: RequestOrigin,
+  onTool?: AgentIO["onTool"],
+): Promise<{ parts: PageParts; message: string; changed: boolean }> {
+  if (!choice.apiKey) throw new Error("Add your API key in Settings.");
+  const work = { parts: structuredClone(doc.parts), requests: doc.requests };
+  const { model, providerOptions } = createModel(choice);
+  const result = await generateText({
+    model,
+    system: STRUCTURED_SYSTEM,
+    prompt: buildStructuredPrompt(work, text, origin),
+    tools: buildStructuredTools(work, browserAgentIO(choice, onTool)),
+    stopWhen: isStepCount(MAX_AGENT_STEPS),
+    maxOutputTokens: 32000,
+    providerOptions,
+  });
+  return { parts: work.parts, message: result.text, changed: JSON.stringify(work.parts) !== JSON.stringify(doc.parts) };
+}
+
+function browserAgentIO(choice: RemoteModelChoice, onTool?: AgentIO["onTool"]): AgentIO {
+  return {
+    search: (query) => webSearch(choice, query),
+    fetch: async (url) => {
+      const page = await fetchPageText(url);
+      if (page.error || page.text === undefined || !page.url) throw new Error(page.error ?? "Couldn't read that page.");
+      return { url: page.url, text: page.text };
+    },
+    onTool,
+  };
 }
 
 const CACHE_MS = 5 * 60_000;

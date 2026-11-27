@@ -14,11 +14,20 @@ import {
   type RequestOrigin,
 } from "@/lib/genui";
 import { serverModel } from "@/lib/models";
+import {
+  buildStructuredPrompt,
+  buildStructuredTools,
+  INITIAL_PARTS,
+  partsFromHtml,
+  STRUCTURED_SYSTEM,
+  structuredContent,
+  type PanelAgent,
+} from "@/lib/structured";
 import { SERVER_MODEL } from "@/lib/model-settings";
 import { webSearch } from "@/lib/web-search";
 import { isPanelCode } from "@/lib/panel-code";
 import { MAX_PANEL_REQUESTS, MAX_REQUEST_CHARS, type PanelData } from "@/lib/panel-file";
-import type { PanelRecord } from "@/lib/panel-types";
+import { agentOf, type PanelRecord } from "@/lib/panel-types";
 import * as panels from "@/lib/panels-db";
 
 export type { RequestOrigin };
@@ -44,6 +53,12 @@ function parsePanel(value: unknown): PanelData {
   const requests = Array.isArray(v.requests)
     ? v.requests.filter((r): r is string => typeof r === "string").map((r) => r.slice(0, MAX_REQUEST_CHARS))
     : [];
+  // A Structured page: its HTML is rendered here from the parts, never taken from the browser.
+  if (v.agent === "structured") {
+    const { parts, html } = structuredContent(v.parts);
+    if (html.length > MAX_HTML_CHARS) throw new Error("The page is too large.");
+    return { html, requests: requests.slice(-MAX_PANEL_REQUESTS), agent: "structured", parts };
+  }
   return { html: v.html, requests: requests.slice(-MAX_PANEL_REQUESTS) };
 }
 
@@ -113,13 +128,41 @@ export async function revertPanel(code: unknown, version: unknown): Promise<Pane
   }
 }
 
+// Switches the agent that edits a saved panel, converting the page once and saving it as a
+// new version (so Versions can undo it). Structured → Classic keeps the rendered HTML;
+// Classic → Structured wraps the HTML into the three parts.
+export async function setPanelAgent(code: unknown, agent: unknown): Promise<PanelResult> {
+  try {
+    const c = await guard(code);
+    if (agent !== "classic" && agent !== "structured") return { error: "Unknown agent." };
+    const current = await panels.findPanel(c);
+    if (!current) return { error: "This panel isn't saved yet." };
+    if (agentOf(current) === agent) return { panel: current };
+    if (agent === "classic") {
+      return { panel: await panels.savePanel(c, { html: current.html, requests: current.requests }, "Switched to the Classic agent") };
+    }
+    const { parts, html } = structuredContent(partsFromHtml(current.html));
+    return {
+      panel: await panels.savePanel(
+        c,
+        { html, requests: current.requests, agent: "structured", parts },
+        "Switched to the Structured agent",
+      ),
+    };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
 // The server runs its own model on the stored panel (or the starting page, for a new code)
-// and stores the result. Only for panels whose server_llm flag allows it.
+// and stores the result. Only for panels whose server_llm flag allows it. A stored panel
+// keeps its agent; a new code uses startAgent.
 export async function submitRequest(
   transcript: string,
   origin: RequestOrigin,
   code: unknown,
   startHtml?: unknown,
+  startAgent?: unknown,
 ): Promise<PanelResult> {
   let c: string;
   try {
@@ -131,6 +174,9 @@ export async function submitRequest(
   const current = await panels.findPanel(c);
   if (!(current ? current.serverLlm : panels.serverLlmDefault())) return { error: NO_SERVER_LLM };
   if (!text) return current ? { panel: current } : {};
+
+  const agent: PanelAgent = current ? agentOf(current) : startAgent === "structured" ? "structured" : "classic";
+  if (agent === "structured") return submitStructured(c, text, origin, current);
 
   try {
     const start = current ?? parsePanel({ html: startHtml, requests: [] });
@@ -158,6 +204,47 @@ export async function submitRequest(
     return { panel: await panels.savePanel(c, { html: doc.html, requests }, entry), message: result.text };
   } catch (err) {
     console.error("submitRequest failed:", err instanceof Error ? err.message : err);
+    return failure(err);
+  }
+}
+
+function serverAgentIO(code: string) {
+  return {
+    search: (query: string) => webSearch({ provider: "google", model: SERVER_MODEL }, query),
+    fetch: (url: string) => pageText(url).value,
+    onTool: (name: string, input: string) => console.info("agent %s %s: %s", code, name, input.slice(0, 200)),
+  };
+}
+
+// submitRequest with the Structured agent: read_file / write_file on the three JSON parts.
+async function submitStructured(
+  code: string,
+  text: string,
+  origin: RequestOrigin,
+  current: PanelRecord | null,
+): Promise<PanelResult> {
+  try {
+    const startParts = current?.parts ?? INITIAL_PARTS;
+    const work = { parts: structuredClone(startParts), requests: current?.requests ?? [] };
+    const { model, providerOptions } = serverModel();
+    const result = await generateText({
+      model,
+      system: STRUCTURED_SYSTEM,
+      prompt: buildStructuredPrompt(work, text, origin),
+      tools: buildStructuredTools(work, serverAgentIO(code)),
+      stopWhen: isStepCount(MAX_AGENT_STEPS),
+      maxOutputTokens: 32000,
+      providerOptions,
+    });
+    if (JSON.stringify(work.parts) === JSON.stringify(startParts)) {
+      return { panel: current ?? undefined, message: result.text };
+    }
+    const entry = historyEntry(text, origin);
+    const requests = [...work.requests, entry].slice(-MAX_PANEL_REQUESTS);
+    const page = parsePanel({ requests, agent: "structured", parts: work.parts, html: "" });
+    return { panel: await panels.savePanel(code, page, entry), message: result.text };
+  } catch (err) {
+    console.error("submitRequest (structured) failed:", err instanceof Error ? err.message : err);
     return failure(err);
   }
 }

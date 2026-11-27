@@ -1,3 +1,5 @@
+import type { PanelContent } from "./panel-types";
+
 // The panel export file: the session exactly as the server stores it (HTML + request
 // history), wrapped with a format tag and version so imports can be checked.
 
@@ -6,7 +8,8 @@ export const PANEL_VERSION = 1;
 export const MAX_PANEL_REQUESTS = 20;
 export const MAX_REQUEST_CHARS = 4000;
 
-export type PanelData = { html: string; requests: string[] };
+// agent/parts only for Structured pages (see PanelContent).
+export type PanelData = PanelContent;
 export type PanelFile = PanelData & { format: typeof PANEL_FORMAT; version: number; exportedAt: string };
 
 export function toPanelFile(data: PanelData): PanelFile {
@@ -33,7 +36,11 @@ export function parsePanelFile(text: string): PanelData {
       throw new Error("That export comes from a newer version of aipanel.");
     }
     const requests = Array.isArray(v.requests) ? v.requests.filter((r): r is string => typeof r === "string") : [];
-    return { html: v.html, requests: requests.map((r) => r.slice(0, MAX_REQUEST_CHARS)).slice(-MAX_PANEL_REQUESTS) };
+    return {
+      html: v.html,
+      requests: requests.map((r) => r.slice(0, MAX_REQUEST_CHARS)).slice(-MAX_PANEL_REQUESTS),
+      ...(v.agent === "structured" && v.parts && { agent: "structured" as const, parts: v.parts }),
+    };
   }
   if (/^<(!doctype html|html[\s>])/i.test(trimmed)) return { html: text, requests: [] };
   throw new Error("Import an aipanel .json export or an .html file.");
