@@ -19,6 +19,7 @@ import {
   buildStructuredTools,
   INITIAL_PARTS,
   partsFromHtml,
+  STRUCTURED_STOP,
   STRUCTURED_SYSTEM,
   structuredContent,
   type PanelAgent,
@@ -225,24 +226,24 @@ async function submitStructured(
 ): Promise<PanelResult> {
   try {
     const startParts = current?.parts ?? INITIAL_PARTS;
-    const work = { parts: structuredClone(startParts), requests: current?.requests ?? [] };
+    const work: { parts: typeof startParts; requests: string[]; message?: string } = { parts: structuredClone(startParts), requests: current?.requests ?? [] };
     const { model, providerOptions } = serverModel();
     const result = await generateText({
       model,
       system: STRUCTURED_SYSTEM,
       prompt: buildStructuredPrompt(work, text, origin),
       tools: buildStructuredTools(work, serverAgentIO(code)),
-      stopWhen: isStepCount(MAX_AGENT_STEPS),
+      stopWhen: STRUCTURED_STOP,
       maxOutputTokens: 32000,
       providerOptions,
     });
     if (JSON.stringify(work.parts) === JSON.stringify(startParts)) {
-      return { panel: current ?? undefined, message: result.text };
+      return { panel: current ?? undefined, message: work.message ?? result.text };
     }
     const entry = historyEntry(text, origin);
     const requests = [...work.requests, entry].slice(-MAX_PANEL_REQUESTS);
     const page = parsePanel({ requests, agent: "structured", parts: work.parts, html: "" });
-    return { panel: await panels.savePanel(code, page, entry), message: result.text };
+    return { panel: await panels.savePanel(code, page, entry), message: work.message ?? result.text };
   } catch (err) {
     console.error("submitRequest (structured) failed:", err instanceof Error ? err.message : err);
     return failure(err);
