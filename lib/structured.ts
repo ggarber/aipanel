@@ -329,7 +329,55 @@ export function readPart(parts: PageParts, path?: string | null): unknown {
   };
 }
 
+// The shape every part must keep. A write that breaks it is refused with the reason, rather
+// than normalizeParts silently dropping it (e.g. a body that arrived as one string).
+const ARRAY_FIELDS: Record<string, string> = {
+  "structure/body": "an array of nodes",
+  "structure/head": "an array of nodes",
+  "structure/scripts": "an array of script strings",
+};
+const OBJECT_FIELDS: Record<string, string> = {
+  instructions: "an object of short strings",
+  style: "an object {tokens, rules, css}",
+  structure: "an object {title, head, body, scripts}",
+  "style/tokens": 'an object {"--name": value}',
+  "style/rules": "an object {selector: {property: value}}",
+};
+
+// Fixes the forgivable mistakes (an HTML string where nodes go, one node instead of a list)
+// and returns an error for the rest.
+function checkShape(root: Record<string, unknown>): string | null {
+  for (const [path, want] of Object.entries(OBJECT_FIELDS)) {
+    const got = getAt(root, parsePath(path));
+    if (got.found && !isObject(got.value)) return `${path} must be ${want}; got ${typeOf(got.value)}.`;
+  }
+  const style = root.style as Record<string, unknown> | undefined;
+  if (style && style.css !== undefined && typeof style.css !== "string") return "style/css must be a string of CSS.";
+  const structure = root.structure as Record<string, unknown> | undefined;
+  if (!structure) return null;
+  for (const [path, want] of Object.entries(ARRAY_FIELDS)) {
+    const key = path.split("/")[1];
+    const value = structure[key];
+    if (value === undefined || Array.isArray(value)) continue;
+    if (key === "scripts" && (typeof value === "string" || isObject(value))) structure[key] = [value];
+    else if (key !== "scripts" && typeof value === "string") structure[key] = [{ html: value }];
+    else if (key !== "scripts" && isObject(value) && (typeof value.tag === "string" || typeof value.html === "string")) {
+      structure[key] = [value];
+    } else return `${path} must be ${want}; got ${typeOf(value)}.`;
+  }
+  return null;
+}
+
+function typeOf(v: unknown): string {
+  if (Array.isArray(v)) return `an array of ${v.length}`;
+  if (v === null) return "null";
+  if (typeof v === "string") return `a string (${v.length} chars${/^\s*[[{]/.test(v) ? ", which is not valid JSON" : ""})`;
+  return typeof v === "object" ? "an object" : `a ${typeof v}`;
+}
+
 // content "" (or only spaces) deletes; otherwise JSON, or plain text for a string value.
+// Content that starts like JSON ({ or [) must parse: guessing it was meant as text would store
+// a broken page.
 export function writePart(work: { parts: PageParts }, path: string | undefined | null, content: string) {
   const segments = parsePath(path);
   const remove = !content.trim();
@@ -337,33 +385,50 @@ export function writePart(work: { parts: PageParts }, path: string | undefined |
   if (!remove) {
     try {
       value = JSON.parse(content);
-    } catch {
+    } catch (err) {
+      if (/^\s*[[{]/.test(content)) {
+        return {
+          ok: false,
+          error:
+            `content is not valid JSON (${err instanceof Error ? err.message : "parse error"}). Nothing was written. ` +
+            "Check the quotes and escapes, or write smaller pieces (one node or one rule per call).",
+        };
+      }
       value = content;
     }
   }
   if (segments.length === 0) {
     if (remove) return { ok: false, error: "Can't delete the whole page; write the parts instead." };
     if (!isObject(value)) return { ok: false, error: "The whole page is a JSON object {instructions, style, structure}." };
-    work.parts = normalizeParts(value);
-    return { ok: true, chars: JSON.stringify(work.parts).length };
-  }
-  if (!(PART_NAMES as readonly string[]).includes(segments[0])) {
+  } else if (!(PART_NAMES as readonly string[]).includes(segments[0])) {
     return { ok: false, error: `Paths start with ${PART_NAMES.join(", ")}.` };
   }
-  const next = structuredClone(work.parts) as unknown as Record<string, unknown>;
-  if (segments.length === 1) {
-    if (remove) next[segments[0]] = {};
-    else if (!isObject(value)) return { ok: false, error: `${segments[0]} is a JSON object.` };
-    else next[segments[0]] = value;
-  } else {
-    const error = setAt(next, segments, remove ? undefined : value);
-    if (error) return { ok: false, error };
+  let next: Record<string, unknown>;
+  if (segments.length === 0) next = structuredClone(value) as Record<string, unknown>;
+  else {
+    next = structuredClone(work.parts) as unknown as Record<string, unknown>;
+    if (segments.length === 1) {
+      if (remove) next[segments[0]] = {};
+      else if (!isObject(value)) return { ok: false, error: `${segments[0]} must be a JSON object; got ${typeOf(value)}.` };
+      else next[segments[0]] = value;
+    } else {
+      const error = setAt(next, segments, remove ? undefined : value);
+      if (error) return { ok: false, error };
+    }
   }
+  const shapeError = checkShape(next);
+  if (shapeError) return { ok: false, error: `${shapeError} Nothing was written.` };
   const normalized = normalizeParts(next);
   const chars = JSON.stringify(normalized).length;
   if (chars > MAX_PARTS_CHARS) return { ok: false, error: "That would make the page too large." };
   work.parts = normalized;
-  return { ok: true, chars, ...(remove && { deleted: path }) };
+  if (remove) return { ok: true, deleted: path, chars };
+  if (segments[segments.length - 1] === "-") {
+    const list = getAt(normalized, segments.slice(0, -1));
+    segments[segments.length - 1] = String(list.found && Array.isArray(list.value) ? list.value.length - 1 : 0);
+  }
+  const stored = getAt(normalized, segments);
+  return { ok: true, chars, stored: stored.found ? typeOf(stored.value) : "nothing" };
 }
 
 // Tools edit work.parts in place; io adds the research tools.
@@ -434,6 +499,11 @@ Tools:
   one node to change some content, append a node to add a section. Write a whole part (or the
   whole page) only for a new screen or a substantial redesign.
 - Array indexes shift after a delete or insert: re-read the parent before further index edits.
+- Check every write_file result. ok: false means nothing was written: fix the content (usually
+  JSON quoting or escaping) and write again. Never finish while structure/body is empty or
+  scripts refer to element ids that aren't in the body.
+- For a new screen, write it in a few calls rather than one huge JSON: instructions, then
+  style, then structure (or the body section by section with "structure/body/-"), then scripts.
 - When the page is large, the prompt shows an outline; read_file the parts you need first.
 
 You work as an agent: you can call tools several times before answering. Research tools (when
