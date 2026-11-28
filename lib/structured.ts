@@ -1,6 +1,6 @@
-import { tool } from "ai";
+import { hasToolCall, isStepCount, tool } from "ai";
 import { z } from "zod";
-import { describeRequest, researchTools, type AgentIO, type RequestOrigin } from "./genui";
+import { describeRequest, MAX_AGENT_STEPS, researchTools, type AgentIO, type RequestOrigin } from "./genui";
 
 // The Structured agent: a page is kept as three JSON parts instead of one HTML document.
 //   instructions  what the page is for and how it was built (the "design notes")
@@ -431,10 +431,23 @@ export function writePart(work: { parts: PageParts }, path: string | undefined |
   return { ok: true, chars, stored: stored.found ? typeOf(stored.value) : "nothing" };
 }
 
-// Tools edit work.parts in place; io adds the research tools.
-export function buildStructuredTools(work: { parts: PageParts }, io: AgentIO = {}) {
+// The loop ends at the step that calls done (sent together with the last writes), so no extra
+// model call is spent only on the closing sentence.
+export const STRUCTURED_STOP = [isStepCount(MAX_AGENT_STEPS), hasToolCall("done")];
+
+// Tools edit work.parts in place (done stores the reply in work.message); io adds the research tools.
+export function buildStructuredTools(work: { parts: PageParts; message?: string }, io: AgentIO = {}) {
   return {
     ...researchTools(io),
+    done: tool({
+      description:
+        "Finish: call it in the same reply as your last write_file calls, with one short sentence for the user about what changed (or why nothing did).",
+      inputSchema: z.object({ message: z.string().describe("One short sentence for the user.") }),
+      execute: async ({ message }) => {
+        work.message = message.slice(0, 500);
+        return { ok: true };
+      },
+    }),
     read_file: tool({
       description:
         "Read a part of the page as JSON. path: e.g. 'instructions', 'style/rules', 'structure/body/0/children/1'; omit it for all three parts.",
@@ -495,16 +508,24 @@ Tools:
 - Paths are "/"-separated keys and array indexes: "instructions/purpose", "style/tokens/--accent",
   "style/rules/.card", "structure/body/2/children/0/text", "structure/scripts/1",
   "structure/body/-". Inside a key, write "/" as "~1" (e.g. a selector with a "/").
+- done(message): ends your turn with one short sentence for the user.
+
+Be fast — every model turn costs seconds, so use as few as possible:
+- Put ALL the tool calls of a step in ONE reply: every write_file the change needs (style,
+  structure, scripts and the matching instructions keys) plus done(message), together. A small
+  change is a single reply: its writes + done. A new screen is also a single reply: the
+  instructions, style and structure parts written as separate write_file calls + done.
+- Never read_file what the prompt already shows in full. When the prompt shows only an outline
+  of a part, read just the paths you need to change — all of them in one reply — then write
+  and call done in the next.
 - Edit the smallest path that does the job: change one token to recolor, one rule to restyle,
   one node to change some content, append a node to add a section. Write a whole part (or the
   whole page) only for a new screen or a substantial redesign.
-- Array indexes shift after a delete or insert: re-read the parent before further index edits.
-- Check every write_file result. ok: false means nothing was written: fix the content (usually
-  JSON quoting or escaping) and write again. Never finish while structure/body is empty or
-  scripts refer to element ids that aren't in the body.
-- For a new screen, write it in a few calls rather than one huge JSON: instructions, then
-  style, then structure (or the body section by section with "structure/body/-"), then scripts.
-- When the page is large, the prompt shows an outline; read_file the parts you need first.
+- Array indexes shift after a delete or insert: in one reply, delete or insert at the highest
+  index first, or write the parent array whole.
+- write_file results come back after your reply. If one says ok: false, nothing was written:
+  fix it (usually JSON quoting or escaping) and write again, then call done. Never leave
+  structure/body empty or scripts referring to element ids that aren't in the body.
 
 You work as an agent: you can call tools several times before answering. Research tools (when
 they are available):
@@ -579,13 +600,30 @@ Error on failure.
   couldn't look up, give general or typical information and label it as not live.
 
 Always call write_file to change the screen unless the request is unclear or impossible; then
-make no change and reply with one short sentence. After your tool calls, reply with one short
-sentence describing what changed.`;
+make no change. Always end with done(message), in the same reply as your last writes.`;
 
-// The page goes into the prompt whole when it's small; otherwise instructions and style whole
-// and an outline of the structure, and the agent reads what it needs.
-const INLINE_PARTS_CHARS = 30_000;
-const MAX_OUTLINE_LINES = 300;
+// The page goes into the prompt whole only when it's small. Otherwise the prompt has what
+// most edits need — instructions, tokens, the CSS selectors, and an outline of the structure
+// with paths, ids, classes and short text — and the agent reads the rest by path.
+const INLINE_PARTS_CHARS = 6_000;
+const MAX_OUTLINE_LINES = 400;
+
+const clip = (text: string, n: number) => {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+};
+
+function ruleOutline(rules: Record<string, unknown>, path: string, lines: string[]) {
+  for (const [selector, decls] of Object.entries(rules)) {
+    if (!isObject(decls)) continue;
+    const key = `${path}/${selector.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+    const nested = Object.values(decls).some(isObject);
+    if (nested) {
+      lines.push(`${key}  {block}`);
+      ruleOutline(decls, key, lines);
+    } else lines.push(`${key}  (${Object.keys(decls).join(", ")})`);
+  }
+}
 
 function outline(parts: PageParts): string {
   const lines: string[] = [];
@@ -595,25 +633,36 @@ function outline(parts: PageParts): string {
       if (lines.length >= MAX_OUTLINE_LINES) return;
       const p = `${path}/${i}`;
       const pad = "  ".repeat(depth);
+      if (typeof n === "string") return void lines.push(`${pad}${p}  text "${clip(n, 60)}"`);
       if (!isObject(n)) return;
       if (typeof n.html === "string") {
-        lines.push(`${pad}${p}  raw html (${n.html.length} chars): ${n.html.slice(0, 80).replace(/\s+/g, " ")}…`);
-        return;
+        return void lines.push(`${pad}${p}  raw html (${n.html.length} chars): ${clip(n.html, 100)}`);
       }
       const sel = `${n.tag}${n.id ? `#${n.id}` : ""}${n.class ? `.${String(n.class).trim().split(/\s+/).join(".")}` : ""}`;
-      const text = typeof n.text === "string" ? ` "${n.text.slice(0, 60)}"` : "";
-      lines.push(`${pad}${p}  <${sel}>${text}`);
+      const attrs = isObject(n.attrs) && Object.keys(n.attrs).length ? ` [${Object.keys(n.attrs).join(" ")}]` : "";
+      const text = typeof n.text === "string" ? ` "${clip(n.text, 60)}"` : "";
+      lines.push(`${pad}${p}  <${sel}>${attrs}${text}`);
       walk(n.children, `${p}/children`, depth + 1);
     });
   };
   walk(parts.structure.body, "structure/body", 0);
   if (lines.length >= MAX_OUTLINE_LINES) lines.push("… (more: read_file the parents)");
+  const rules: string[] = [];
+  ruleOutline(parts.style.rules ?? {}, "style/rules", rules);
   const scripts = (parts.structure.scripts ?? []).map(
-    (s, i) => `structure/scripts/${i}  ${typeof s === "string" ? `${s.length} chars: ${s.slice(0, 80).replace(/\s+/g, " ")}…` : JSON.stringify(s).slice(0, 120)}`,
+    (s, i) =>
+      `structure/scripts/${i}  ${typeof s === "string" ? `${s.length} chars: ${clip(s, 100)}` : JSON.stringify(s).slice(0, 120)}`,
   );
   return [
+    `instructions: ${JSON.stringify(parts.instructions)}`,
+    `style/tokens: ${JSON.stringify(parts.style.tokens ?? {})}`,
+    `style/rules (selector and the properties it sets; read_file for values):`,
+    ...rules,
+    `style/css: ${(parts.style.css ?? "").length} chars`,
     `structure/title: ${JSON.stringify(parts.structure.title ?? "")}`,
-    `structure/head: ${(parts.structure.head ?? []).length} nodes`,
+    `structure/head: ${JSON.stringify(parts.structure.head ?? []).slice(0, 300)}`,
+    ...(parts.structure.bodyAttrs ? [`structure/bodyAttrs: ${JSON.stringify(parts.structure.bodyAttrs)}`] : []),
+    `structure/body:`,
     ...lines,
     ...scripts,
   ].join("\n");
@@ -630,11 +679,9 @@ export function buildStructuredPrompt(
   const json = JSON.stringify(work.parts);
   const page =
     json.length <= INLINE_PARTS_CHARS
-      ? `Current page (all three parts):\n<page>\n${json}\n</page>`
-      : `Current page (large: instructions and style in full, then an outline of structure; read_file for details):\n` +
-        `<instructions>\n${JSON.stringify(work.parts.instructions)}\n</instructions>\n` +
-        `<style>\n${JSON.stringify(work.parts.style).slice(0, INLINE_PARTS_CHARS)}\n</style>\n` +
-        `<structure_outline>\n${outline(work.parts)}\n</structure_outline>`;
+      ? `Current page (all three parts, in full):\n<page>\n${json}\n</page>`
+      : `Current page (outline: instructions and tokens in full; read_file the rule values, nodes and scripts you need to change):\n` +
+        `<page_outline>\n${outline(work.parts)}\n</page_outline>`;
   return `${previous}${page}\n\n${describeRequest(text, origin)}`;
 }
 

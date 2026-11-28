@@ -6,7 +6,7 @@ import { extractJson } from "./extract-core";
 import { fetchPageText } from "@/app/actions";
 import { buildPrompt, buildTools, MAX_AGENT_STEPS, SYSTEM, type AgentIO, type RequestOrigin } from "./genui";
 import { webSearch } from "./web-search";
-import { buildStructuredPrompt, buildStructuredTools, STRUCTURED_SYSTEM, type PageParts } from "./structured";
+import { buildStructuredPrompt, buildStructuredTools, STRUCTURED_STOP, STRUCTURED_SYSTEM, type PageParts } from "./structured";
 import { createModel } from "./model-factory";
 import type { RemoteModelChoice } from "./model-settings";
 
@@ -51,18 +51,18 @@ export async function runStructuredWithOwnKey(
   onTool?: AgentIO["onTool"],
 ): Promise<{ parts: PageParts; message: string; changed: boolean }> {
   if (!choice.apiKey) throw new Error("Add your API key in Settings.");
-  const work = { parts: structuredClone(doc.parts), requests: doc.requests };
+  const work: { parts: PageParts; requests: string[]; message?: string } = { parts: structuredClone(doc.parts), requests: doc.requests };
   const { model, providerOptions } = createModel(choice);
   const result = await generateText({
     model,
     system: STRUCTURED_SYSTEM,
     prompt: buildStructuredPrompt(work, text, origin),
     tools: buildStructuredTools(work, browserAgentIO(choice, onTool)),
-    stopWhen: isStepCount(MAX_AGENT_STEPS),
+    stopWhen: STRUCTURED_STOP,
     maxOutputTokens: 32000,
     providerOptions,
   });
-  return { parts: work.parts, message: result.text, changed: JSON.stringify(work.parts) !== JSON.stringify(doc.parts) };
+  return { parts: work.parts, message: work.message ?? result.text, changed: JSON.stringify(work.parts) !== JSON.stringify(doc.parts) };
 }
 
 function browserAgentIO(choice: RemoteModelChoice, onTool?: AgentIO["onTool"]): AgentIO {
